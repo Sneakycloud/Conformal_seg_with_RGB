@@ -3,6 +3,8 @@ import logging
 import numpy as np
 import torch
 from torchvision import transforms
+from torch.utils.data import DataLoader, ConcatDataset, random_split
+from sklearn.model_selection import KFold
 
 import utils.data_handling as dh
 import utils.unet as unet
@@ -81,7 +83,7 @@ if __name__ == '__main__':
     main(**args)
 
 #Trains a 4 input channel unet
-def rgbd_train(folder_path,log_path,seed,epochs,batch_size):
+def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None):
     '''
     Trains a 4 input channel rgb-d unet on nyu v2
     
@@ -90,33 +92,52 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size):
     :param int seed: for reproducability
     :param int epochs: number of epochs to train
     :param int batch_size: how many images in each batch
+    :param [int] class_list: list of all class ints for target classes
     '''
 
+    print("Dataset loading started")
     util.enable_logging(log_path, 'train.log')
     rng = np.random.default_rng(seed)
     dataset = dh.RGBD_Segmentation_Dataset(folder_path, transforms.Compose([dh.RandomHorizontalFlip(),dh.RandomVerticalFlip()]))
-    class_count = dataset.class_count()
+    if class_list == None:
+        class_list = dataset.class_count()
+        print(f"total classes = {class_list}")
+    print("Dataset loading completed")
     
     #To prepare for cross validation: https://discuss.pytorch.org/t/using-k-fold-cross-validation-to-train-my-model/196288
     
-    
-    train_set, valid_set =  torch.utils.data.random_split(dataset, [0.8, 0.2])
-    
     torch.manual_seed(seed)
-    train_it = torch.utils.data.DataLoader(
-                                    train_set, shuffle=True,
-                                    batch_size=batch_size, num_workers=0,
-                                    generator=torch.Generator('cuda')
-                                                   .manual_seed(seed))
-    valid_it = torch.utils.data.DataLoader(
-                                    valid_set, shuffle=True,
-                                    batch_size=batch_size, num_workers=0,
-                                    generator=torch.Generator('cuda')
-                                                   .manual_seed(seed))
 
     #in channels, how many output classes
-    model = unet.UNet(4, class_count)
-    
+    model = unet.UNet(4, class_list)
+    print("Model created")
     logging.info('Start training')
-    model.fit(train_it, valid_it, epochs, log_path,None)
+    
+    splits = 10
+    split_range = [1 / splits for _ in range(splits)]
+    
+    folds = random_split(dataset, split_range,generator=torch.Generator('cuda').manual_seed(seed))
+    for fold in range(splits):
+        train_set = folds[fold]
+        valid_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
+        
+        #  Dataloaders here
+        #  Example
+        logging.info(f'Fold {fold} training has started')
+        print(f'Fold {fold} training has started')
+        train_it = torch.utils.data.DataLoader(
+                                train_set, shuffle=False,
+                                batch_size=batch_size, num_workers=2,
+                                generator=torch.Generator('cuda')
+                                                .manual_seed(seed))
+        valid_it = torch.utils.data.DataLoader(
+                                        valid_set, shuffle=False,
+                                        batch_size=batch_size, num_workers=2,
+                                        generator=torch.Generator('cuda')
+                                                    .manual_seed(seed))
+        
+        model.fit(train_it, valid_it, epochs, log_path,None)
+        print(f'Fold {fold} training has ended')
+        logging.info(f'Fold {fold} training has ended')
+    
     logging.info('End training')

@@ -530,10 +530,11 @@ class UNet(BaseUNet):
             batch = batch['inputs'].to(self._device,
                                        dtype=batch['inputs'].dtype)
         predicted = self(batch)
-        predicted = torch.exp(-torch.exp(predicted))
+        
+        #predicted = torch.exp(-torch.exp(predicted))
 
-        # softmax = torch.nn.Softmax2d()
-        # predicted = softmax(predicted)
+        softmax = torch.nn.Softmax2d()
+        predicted = softmax(predicted)
 
         return predicted.detach().cpu().numpy()
 
@@ -630,7 +631,7 @@ class UNet(BaseUNet):
         self.train()
         epoch_loss = 0.0
         metric.reset()
-
+        
         for (rgb, depth, target) in train_it:
             target = target.to(self._device)
 
