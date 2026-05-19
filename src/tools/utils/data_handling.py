@@ -42,6 +42,166 @@ class RGBD_Segmentation_Dataset(Dataset):
         self.classes = torch.unique(self.mask_images).numpy()
         return self.classes
     
+class SUNRGBDDataset1(Dataset):
+
+    def __init__(self, root, num_classes=13, transform=None, img_size=(480, 640)):
+
+        super(SUNRGBDDataset1, self).__init__()
+        self.transform = transform
+
+        samples = []
+        for split in ['train', 'test']:
+            list_file = os.path.join(root, f'{split}{num_classes}.txt')
+            if not os.path.exists(list_file):
+                print(f'Warning: {list_file} not found, skipping.')
+                continue
+            with open(list_file, 'r') as f:
+                for line in f:
+                    parts = line.strip().split(' ')
+                    if len(parts) == 3:
+                        rgb_path, depth_path, label_path = parts
+                        samples.append((rgb_path, depth_path, label_path))
+
+        print(f'Found {len(samples)} samples, loading into memory...')
+
+        H, W = img_size
+        N = len(samples)
+
+        self.rgb_images   = torch.zeros((N, 3, H, W), dtype=torch.float32)
+        self.depth_images = torch.zeros((N, 1, H, W), dtype=torch.float32)
+        self.mask_images  = torch.zeros((N, 1, H, W), dtype=torch.float32)
+
+        for i, (rgb_path, depth_path, label_path) in enumerate(samples):
+
+            if i % 500 == 0:
+                print(f'  Loading {i}/{N}...')
+
+            # RGB (3, H, W)
+            rgb = Image.open(os.path.join(root, rgb_path)).convert('RGB')
+            rgb = rgb.resize((W, H))
+            self.rgb_images[i] = torch.from_numpy(
+                np.array(rgb, dtype=np.uint8)
+            ).permute(2, 0, 1).float()
+
+            # Depth (1, H, W)
+            depth = Image.open(os.path.join(root, depth_path))
+            depth = depth.resize((W, H))
+            self.depth_images[i] = torch.from_numpy(
+                np.array(depth, dtype=np.uint8)
+            ).unsqueeze(0).float()
+
+            # Mask (1, H, W)
+            mask = Image.open(os.path.join(root, label_path))
+            mask = mask.resize((W, H), resample=Image.NEAREST)
+            self.mask_images[i] = torch.from_numpy(
+                np.array(mask, dtype=np.uint8)
+            ).unsqueeze(0).float()
+
+        print(f'Done. rgb: {self.rgb_images.shape}, '
+              f'depth: {self.depth_images.shape}, '
+              f'mask: {self.mask_images.shape}')
+
+        self.class_count()
+
+    def __len__(self):
+        return self.rgb_images.shape[0]
+
+    def __getitem__(self, index):
+        rgb   = self.rgb_images[index]
+        depth = self.depth_images[index]
+        mask  = self.mask_images[index]
+
+        if self.transform:
+            rgb, depth, mask = self.transform((rgb, depth, mask))
+
+        return rgb, depth, mask
+
+    def class_count(self):
+        self.classes = torch.unique(self.mask_images).numpy()
+        print(f'Classes present in dataset: {self.classes}')
+        return self.classes
+    
+class SUNRGBDDataset2(Dataset):
+
+    def __init__(self, root, num_classes=13, transform=None, img_size=(480, 640)):
+
+        super(SUNRGBDDataset2, self).__init__()
+        self.root = root
+        self.transform = transform
+        self.img_size = img_size
+        self.samples = []
+
+        for split in ['train', 'test']:
+            list_file = os.path.join(root, f'{split}{num_classes}.txt')
+            if not os.path.exists(list_file):
+                print(f'Warning: {list_file} not found, skipping.')
+                continue
+            with open(list_file, 'r') as f:
+                for line in f:
+                    parts = line.strip().split(' ')
+                    if len(parts) == 3:
+                        rgb_path, depth_path, label_path = parts
+                        self.samples.append((rgb_path, depth_path, label_path))
+
+        print(f'Found {len(self.samples)} samples (lazy loading — '
+              f'images will be read from disk on demand)')
+
+        self.classes = self._scan_classes()
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        H, W = self.img_size
+        rgb_path, depth_path, label_path = self.samples[index]
+
+        # RGB (3, H, W)
+        rgb = Image.open(os.path.join(self.root, rgb_path)).convert('RGB')
+        rgb = rgb.resize((W, H))
+        rgb = torch.from_numpy(
+            np.array(rgb, dtype=np.uint8)
+        ).permute(2, 0, 1).float()
+
+        # Depth (1, H, W)
+        depth = Image.open(os.path.join(self.root, depth_path))
+        depth = depth.resize((W, H))
+        depth = torch.from_numpy(
+            np.array(depth, dtype=np.uint8)
+        ).unsqueeze(0).float()
+
+        # Mask (1, H, W)
+        mask = Image.open(os.path.join(self.root, label_path))
+        mask = mask.resize((W, H), resample=Image.NEAREST)
+        mask = torch.from_numpy(
+            np.array(mask, dtype=np.uint8)
+        ).unsqueeze(0).float()
+
+        if self.transform:
+            rgb, depth, mask = self.transform((rgb, depth, mask))
+
+        return rgb, depth, mask
+
+    def class_count(self):
+        return self.classes
+
+    def _scan_classes(self):
+
+        print('Scanning mask files for unique classes '
+              '(reads label PNGs only)...')
+        unique = set()
+        for i, (_, _, label_path) in enumerate(self.samples):
+            if i % 500 == 0:
+                print(f'  Scanning {i}/{len(self.samples)}...')
+            mask = np.array(
+                Image.open(os.path.join(self.root, label_path)),
+                dtype=np.uint8
+            )
+            unique.update(np.unique(mask).tolist())
+
+        classes = np.array(sorted(unique))
+        print(f'Classes present in dataset: {classes}')
+        return classes
+    
 
 #https://docs.pytorch.org/tutorials/beginner/data_loading_tutorial.html
 class RandomVerticalFlip(object):
