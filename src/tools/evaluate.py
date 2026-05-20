@@ -137,7 +137,6 @@ def main(img_path, gt_path, model_path, out_file, selected_ids, classes):
     df = pd.DataFrame(results)
     df.to_csv(out_file, index=False)
 
-
 if __name__ == '__main__':
     import argparse
 

@@ -4,8 +4,10 @@ import os
 import concretedropout.pytorch as cd
 import numpy as np
 import torch
+import evaluate
 from torch import nn
 from tqdm import tqdm
+from ..evaluate_uncertainty_maps import evaluate_uncertainty
 
 #from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
@@ -370,7 +372,7 @@ class UNet(BaseUNet):
     '''UNet implementation for uncertainty quantification using feature
     conformal prediction and concrete dropout'''
 
-    def __init__(self, in_channels, classes, device='cuda'):
+    def __init__(self, in_channels, classes, mode, device='cuda'):
         '''Setup model
 
         Parameters
@@ -378,6 +380,7 @@ class UNet(BaseUNet):
         in_channels : Number of input channels
         classes : List of class labels
         device : Device to run model on [cuda|cpu]
+        mode: RGB, D, or RGBD
         '''
         BaseUNet.__init__(self)
 
@@ -392,6 +395,7 @@ class UNet(BaseUNet):
         self._upsampling = nn.ModuleList()
         self._act = nn.ReLU()
         self._pool = nn.MaxPool2d(2)
+        self._mode = mode
 
         # downsampling
         for filters in self.LAYER_CONFIG:
@@ -635,7 +639,12 @@ class UNet(BaseUNet):
         for (rgb, depth, target) in train_it:
             target = target.to(self._device)
 
-            inputs = torch.cat([rgb,depth],dim=1).to(self._device)
+            if self._mode == "RGB":
+                inputs = rgb.to(self._device)
+            elif self._mode == "D":
+                inputs = depth.to(self._device)
+            elif self._mode == "RGBD":
+                inputs = torch.cat([rgb,depth],dim=1).to(self._device)
 
             outputs = self(inputs)
 
@@ -674,10 +683,15 @@ class UNet(BaseUNet):
         epoch_loss = 0.0
         metric.reset()
 
-        for (rgb, depth, target) in valid_it:
+        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
             target = target.to(self._device)
 
-            inputs = torch.cat([rgb,depth],dim=1).to(self._device)
+            if self._mode == "RGB":
+                inputs = rgb.to(self._device)
+            elif self._mode == "D":
+                inputs = depth.to(self._device)
+            elif self._mode == "RGBD":
+                inputs = torch.cat([rgb,depth],dim=1).to(self._device)
 
             with torch.no_grad():
                 outputs = self(inputs)
@@ -688,6 +702,61 @@ class UNet(BaseUNet):
 
         return epoch_loss/len(valid_it), metric.value()
 
+    def final_evaluation(self, valid_it, classes, log_path):
+        self.eval()
+
+        #Prep for eval
+        results = {'img': [], 'mcc': []}
+        confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
+        predictions = torch.zeros((valid_it.shape[0]*valid_it.shape[1],valid_it.shape[2],valid_it.shape[3]))
+        for cls_id in classes:
+            results[f'f_{cls_id}'] = []
+
+
+        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
+            target = target.to(self._device)
+
+            if self._mode == "RGB":
+                inputs = rgb.to(self._device)
+            elif self._mode == "D":
+                inputs = depth.to(self._device)
+            elif self._mode == "RGBD":
+                inputs = torch.cat([rgb,depth],dim=1).to(self._device)
+
+            with torch.no_grad():
+                outputs = self(inputs)
+                
+            # process images
+            img_id = batch_idx*target.shape[0]
+            
+            for j,x in enumerate(outputs):
+                predicted = x
+                target = target[j].numpy()
+                
+                predictions[img_id+j] = predicted
+
+                evaluate.evaluate_image(confusion, results, img_id+j, predicted,target)
+
+        # add summary statistics for eval
+        results['img'].append('all')
+        f1_class_list = []
+        for cls_id in confusion:
+            f1_measure = evaluate.calculate_f_measure(
+                                                    confusion[cls_id]['tp'],
+                                                    confusion[cls_id]['fp'],
+                                                    confusion[cls_id]['fn'])
+            results[f'f_{cls_id}'].append(f1_measure)
+            f1_class_list.append((cls_id,f1_measure))
+        mcc = evaluate.calculate_mcc(confusion)
+        results['mcc'].append(mcc)
+        
+        
+        #results for uncertainity
+        auces, auses = evaluate_uncertainty(valid_it, predictions, classes, log_path)
+        
+        
+        #final return
+        return f1_class_list, mcc, auces, auses
 
 # class ConformalBase(BaseUNet):
 

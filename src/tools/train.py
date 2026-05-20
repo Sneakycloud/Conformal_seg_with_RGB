@@ -2,6 +2,8 @@
 import logging
 import numpy as np
 import torch
+import pandas as pd
+import os
 from torchvision import transforms
 from torch.utils.data import DataLoader, ConcatDataset, random_split
 from sklearn.model_selection import KFold
@@ -83,7 +85,7 @@ if __name__ == '__main__':
     main(**args)
 
 #Trains a 4 input channel unet
-def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None):
+def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, mode = "RGBD"):
     '''
     Trains a 4 input channel rgb-d unet on nyu v2
     
@@ -93,6 +95,7 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None):
     :param int epochs: number of epochs to train
     :param int batch_size: how many images in each batch
     :param [int] class_list: list of all class ints for target classes
+    :param string mode: Describes which models to create. Either RGB, D, or RGBD.
     '''
 
     print("Dataset loading started")
@@ -108,36 +111,77 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None):
     
     torch.manual_seed(seed)
 
-    #in channels, how many output classes
-    model = unet.UNet(4, class_list)
-    print("Model created")
+    
     logging.info('Start training')
+    #saves the final results from each fold for the final evaluation
+    results = []
+    
+    
     
     splits = 10
     split_range = [1 / splits for _ in range(splits)]
-    
     folds = random_split(dataset, split_range,generator=torch.Generator('cuda').manual_seed(seed))
     for fold in range(splits):
-        train_set = folds[fold]
-        valid_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
-        
-        #  Dataloaders here
-        #  Example
         logging.info(f'Fold {fold} training has started')
         print(f'Fold {fold} training has started')
+        
+        #in channels, how many output classes
+        if mode == "RGB":
+            model = unet.UNet(3, class_list, )
+        elif mode == "D":
+            model = unet.UNet(1, class_list)
+        elif mode == "RGBD": 
+            model = unet.UNet(4, class_list)
+        print("Model created")
+
+        train_set = folds[fold]
+        valid_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
+        print("Datasets concatenated")
+        
+        #  Dataloaders here
         train_it = torch.utils.data.DataLoader(
                                 train_set, shuffle=False,
-                                batch_size=batch_size, num_workers=2,
+                                batch_size=batch_size, num_workers=0,
                                 generator=torch.Generator('cuda')
                                                 .manual_seed(seed))
         valid_it = torch.utils.data.DataLoader(
                                         valid_set, shuffle=False,
-                                        batch_size=batch_size, num_workers=2,
+                                        batch_size=batch_size, num_workers=0,
                                         generator=torch.Generator('cuda')
                                                     .manual_seed(seed))
         
+        #Training
+        print("Starting model fitting")
         model.fit(train_it, valid_it, epochs, log_path,None)
+        print("Starting final evaluation for f1_precision, MCC, AUSE, AUCE")
+        #f1 has scores for every class in format: 
+        #mcc has format: 
+        #auces and auses has format: 
+        f1, mcc, auces, auses = model.final_evaluation(valid_it, class_list, log_path)
+        fold_results = [f"Fold {fold} result", f1, mcc, auces, auses]
+        
+        #save results
+        results.append(fold_results)
+        
+        
         print(f'Fold {fold} training has ended')
+        
         logging.info(f'Fold {fold} training has ended')
+        
+        
+    #save results from evaluation
+    pd.DataFrame(results).to_csv(os.path.join(log_path, "Final_eval_results"), index=False)
+    
+    # mean_f1 = np.mean(np.array([fold[1] for fold in results]), axis=1)
+    # mean_mcc = np.mean(np.array([fold[2] for fold in results]), axis=1)
+    # mean_auces = np.mean(np.array([fold[3] for fold in results]), axis=2)
+    # mean_auses = np.mean(np.array([fold[4] for fold in results]), axis=2)
+    
+    # std_f1 = np.std(np.array([fold[1] for fold in results]), axis=1)
+    # std_mcc = np.std(np.array([fold[2] for fold in results]), axis=1)
+    # std_auces = np.array([fold[3] for fold in results]).std
+    # std_auses = np.array([fold[4] for fold in results]).std
+    
+    
     
     logging.info('End training')

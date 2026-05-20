@@ -6,7 +6,7 @@ import tifffile
 import utils.data_handling as dh
 import utils.util
 
-UQ = ['prob', 'mc_en', 'mc_mi', 'cr', 'cr_cond', 'fcp', 'oracle']
+UQ = ['prob', 'oracle']
 CONF_UQ = UQ[1:-1]
 CM = ['tp', 'fp', 'tn', 'fn']
 IMG_WIDTH = 500
@@ -79,7 +79,7 @@ def step_through(results, uq_id, classes, uqs,
 
 
 def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
-                             selected_ids, gt_path, map_path, classes, steps):
+                             predictions, validation_dataloader, classes, steps):
     '''Perform sparsification for the given uncertainty quantification method
     or the oracle across all pixels of the selected images
 
@@ -104,39 +104,40 @@ def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
     target_vector = np.array([])
     uq_vector = np.array([])
 
-    for img_name in selected_ids:
+    for batch_id, (rgb, depth, targets) in enumerate(validation_dataloader):
         uq_method = UQ[uq_id]
-        predicted = np.load(os.path.join(map_path,
-                                         f'pred_{img_name}.npz'))['predicted']
-        target = tifffile.imread(os.path.join(gt_path, f'{img_name}.tif'))
-        if uq_method == 'oracle':
-            # calculate cross-entropy per pixel
-            # $\sum_j^k y_k * log(\hat{y}_k)$ -> only the probability of the
-            # true class is selected
-            # get probabilities for the true classes
-            probs = utils.util.select_from_index(predicted, target)
-            # for numerical stability
-            probs = np.clip(probs, 1e-12, 1-1e-12)
-            # compute the negative log of the respective probabilities
-            uqs = -np.log(probs)
-        elif uq_method == 'prob':
-            # select the maximum probability for each pixel
-            uqs = utils.util.select_from_index(predicted,
-                                               predicted.argmax(axis=0))
-            # convert prediction probabilities into uncertainties
-            uqs = 1 - uqs
-        else:
-            uqs = np.load(os.path.join(map_path,
-                                       f'{uq_method}_{img_name}.npz'))['uq']
+        batch_predicted = [x for x in predictions[batch_id*targets.shape[0]:(batch_id+1)*targets.shape[0]] ]
+        for i in range(len(batch_predicted)):
+            target = targets[i]
+            predicted = batch_predicted[i]
+            
+            if uq_method == 'oracle':
+                # calculate cross-entropy per pixel
+                # $\sum_j^k y_k * log(\hat{y}_k)$ -> only the probability of the
+                # true class is selected
+                # get probabilities for the true classes
+                probs = utils.util.select_from_index(predicted, target)
+                # for numerical stability
+                probs = np.clip(probs, 1e-12, 1-1e-12)
+                # compute the negative log of the respective probabilities
+                uqs = -np.log(probs)
+            elif uq_method == 'prob':
+                # select the maximum probability for each pixel
+                uqs = utils.util.select_from_index(predicted,
+                                                predicted.argmax(axis=0))
+                # convert prediction probabilities into uncertainties
+                uqs = 1 - uqs
+            else:
+                raise Exception("No longer implemented in evaluate_uncertainity_maps.py for methods other than oracle and prob")
 
-        uqs = uqs.flatten()
-        target = target.flatten()
-        predicted = predicted.argmax(axis=0).flatten()
+            uqs = uqs.flatten()
+            target = target.flatten()
+            predicted = predicted.argmax(axis=0).flatten()
 
-        # store all predictions, gt values and uncertainties
-        pred_vector = np.concatenate([pred_vector, predicted])
-        target_vector = np.concatenate([target_vector, target])
-        uq_vector = np.concatenate([uq_vector, uqs])
+            # store all predictions, gt values and uncertainties
+            pred_vector = np.concatenate([pred_vector, predicted])
+            target_vector = np.concatenate([target_vector, target])
+            uq_vector = np.concatenate([uq_vector, uqs])
 
     # normalize uq values
     uq_min = uq_vector.min()
@@ -627,7 +628,7 @@ def evaluate_conformal_prediction(uq_methods, selected_ids, gt_path, map_path,
     write_one_cls_perf(uq_methods, classes, tmp_conf, tmp_drop, out_path)
 
 
-def evaluate_uncertainty(selected_ids, classes, gt_path, map_path, out_path):
+def evaluate_uncertainty(predictions, dataloader, classes, out_path):
     '''Performm uncertainty quantification evaluation
 
     Parameters
@@ -651,18 +652,13 @@ def evaluate_uncertainty(selected_ids, classes, gt_path, map_path, out_path):
     counts = []
     for uq_i, uq_method in enumerate(UQ):
         counts = calcualte_sparsification(results, indiv_results,
-                                          uncertainties, uq_i, selected_ids,
-                                          gt_path, map_path, classes,
+                                          uncertainties, uq_i, predictions, dataloader, classes,
                                           sparse_steps)
 
     # compute performance per class and for all classes
     perf = compute_perf(results[0], classes)
     # compute corrected performance per class and for all classes
     corr = compute_perf(results[1], classes)
-    # compute corected streams
-    stream_corr = compute_perf(indiv_results[0], classes)
-    # compute corected ditches
-    ditch_corr = compute_perf(indiv_results[1], classes)
 
 
     # compute AUSE
@@ -683,48 +679,8 @@ def evaluate_uncertainty(selected_ids, classes, gt_path, map_path, out_path):
     print(auses)
     print(counts)
     print(auces)
-    # for plotting
-    np.savez(os.path.join(out_path, 'results.npz'), perf=perf,
-             uncertainties=uncertainties, auses=auses, corr=corr,
-             stream_corr=stream_corr, ditch_corr=ditch_corr,
-             counts=counts, auces=auces)
-    # extract mean and std uncertainty for each method at each step
-    # extract per class and all class IAM for each method at each step
-    for uq_i, uq_method in enumerate(UQ[:-1]):
-        with open(os.path.join(out_path, f'plot_{uq_method}.csv'), 'w',
-                  encoding='utf-8') as out:
-            for i, step in enumerate(sparse_steps):
-                # skip nans
-                if step == 1.0:
-                    break
-                # 1) step number
-                line = f'{step},'
-                # 2) MCC for UQ method
-                line += f'{perf[uq_i, i, -1]},'
-                # 3) MCC for oracle
-                line += f'{perf[oracle_idx, i, -1]},'
-                # 4) uncertainty mean
-                uq_mean = uncertainties[uq_i, i, 0]
-                line += f'{uq_mean},'
-                # 5) uncertainty std
-                uq_std = uncertainties[uq_i, i, 1]
-                line += f'{uq_std},'
-                # 6) correction: F1 background
-                line += f'{corr[uq_i, i, 0]},'
-                # 7) correction: F1 ditch
-                line += f'{corr[uq_i, i, 1]},'
-                # 8) correction: F1 stream
-                line += f'{corr[uq_i, i, 2]},'
-                # 9) correction: MCC
-                line += f'{corr[uq_i, i, 3]},'
-                # 10) correction: MCC for oracle
-                line += f'{corr[oracle_idx, i, 3]},'
-                # 11) stream correction: F1 ditch
-                line += f'{stream_corr[uq_i, i, 1]},'
-                # 12) ditch correction: F1 stream
-                line += f'{ditch_corr[uq_i, i, 2]}\n'
-                out.write(line)
 
+    return auses, auces
 
 def main(selected_ids, gt_path, map_path, out_path, uncertainty, conformal,
          classes):
