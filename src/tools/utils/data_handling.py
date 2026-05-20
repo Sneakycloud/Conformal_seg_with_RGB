@@ -270,5 +270,24 @@ class RandomCrop(object):
                     left: left + new_w]
 
         return (rgb, depth, mask)
+    
+class RandomRotation(object):
 
+    def __init__(self, p=0.5):
+        self.probability = p
 
+    def __call__(self, sample):
+        rgb, depth, mask = sample
+
+        if torch.randint(100, size=(1,)) < self.probability * 100:
+
+            angle = int(torch.randint(1, 4, size=(1,))) * 90
+
+            rgb   = transforms.functional.rotate(rgb,   angle)
+            depth = transforms.functional.rotate(depth, angle)
+
+            mask  = transforms.functional.rotate(
+                        mask, angle,
+                        interpolation=transforms.InterpolationMode.NEAREST)
+
+        return (rgb, depth, mask)

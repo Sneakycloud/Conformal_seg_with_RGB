@@ -96,6 +96,44 @@ def evaluate_image(confusion, results, img_id, predicted, gt_img):
 
     results['mcc'].append(calculate_mcc(tmp_conf))
 
+def calculate_iou(tp, fp, fn):
+    '''Calculate Intersection over Union for one class
+ 
+    Parameters
+    ----------
+    tp : Number of true positives
+    fp : Number of false positives
+    fn : Number of false negatives
+ 
+    Returns
+    -------
+    IoU score
+ 
+    '''
+    denominator = tp + fp + fn
+    return tp / denominator if denominator > 0 else 0.0
+
+
+def calculate_mean_iou(confusion):
+    '''Calculate mean IoU across all classes
+ 
+    Parameters
+    ----------
+    confusion : Confusion matrix dict  {cls_id: {tp, fp, tn, fn}}
+ 
+    Returns
+    -------
+    Mean IoU value
+ 
+    '''
+    ious = []
+    for cls_id in confusion:
+        tp = confusion[cls_id]['tp']
+        fp = confusion[cls_id]['fp']
+        fn = confusion[cls_id]['fn']
+        ious.append(calculate_iou(tp, fp, fn))
+    return float(np.mean(ious))
+
 
 def main(img_path, gt_path, model_path, out_file, selected_ids, classes):
     # load data
