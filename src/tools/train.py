@@ -132,6 +132,8 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
             model = unet.UNet(1, class_list)
         elif mode == "RGBD": 
             model = unet.UNet(4, class_list)
+        elif mode == "TMC":
+            model = unet.MultiViewFusionRGBD(class_list)
         print("Model created")
 
         train_set = folds[fold]
@@ -154,9 +156,9 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         print("Starting model fitting")
         model.fit(train_it, valid_it, epochs, log_path,None)
         print("Starting final evaluation for f1_precision, MCC, AUSE, AUCE")
-        #f1 has scores for every class in format: 
-        #mcc has format: 
-        #auces and auses has format: 
+        #f1 has scores for every class in format: [(class_id,f1_score)]
+        #mcc has format: (mcc_score)
+        #auces and auses has format: (methods, auces_scores)
         f1, mcc, auces, auses = model.final_evaluation(valid_it, class_list, log_path)
         fold_results = [f"Fold {fold} result", f1, mcc, auces, auses]
         
@@ -170,18 +172,28 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         
         
     #save results from evaluation
-    pd.DataFrame(results).to_csv(os.path.join(log_path, "Final_eval_results"), index=False)
-    
-    # mean_f1 = np.mean(np.array([fold[1] for fold in results]), axis=1)
-    # mean_mcc = np.mean(np.array([fold[2] for fold in results]), axis=1)
-    # mean_auces = np.mean(np.array([fold[3] for fold in results]), axis=2)
-    # mean_auses = np.mean(np.array([fold[4] for fold in results]), axis=2)
-    
-    # std_f1 = np.std(np.array([fold[1] for fold in results]), axis=1)
-    # std_mcc = np.std(np.array([fold[2] for fold in results]), axis=1)
-    # std_auces = np.array([fold[3] for fold in results]).std
-    # std_auses = np.array([fold[4] for fold in results]).std
+    pd.DataFrame(results).to_csv(os.path.join(log_path, f"Final_eval_results_{mode}"), index=False)
     
     
+    classes_id = [fold[1][0] for fold in results]
+    mean_f1 = np.mean(np.array([[class_tuple[1] for class_tuple in fold[1]] for fold in results]), axis=1) # (classes,mean_f1)
+    mean_mcc = np.mean(np.array([fold[2] for fold in results]), axis=0) # (mean_mcc)
+    mean_auces = np.mean(np.array([fold[3][0] for fold in results]), axis=1) # (classes,mean_auces_scores)
+    mean_auses = np.mean(np.array([fold[4][0] for fold in results]), axis=1) # (classes,mean_auses_scores)
+    
+    std_f1 = np.std(np.array([[class_tuple[1] for class_tuple in fold[1]] for fold in results]), axis=1) # (classes,mean_f1)
+    std_mcc = np.std(np.array([fold[2] for fold in results]), axis=0) # (mean_mcc)
+    std_auces = np.std(np.array([fold[3][0] for fold in results]), axis=1) # (classes,mean_auces_scores)
+    std_auses = np.std(np.array([fold[4][0] for fold in results]), axis=1) # (classes,mean_auses_scores)
+    
+    mean_std_results = {
+        "classes":classes_id,
+        "mean_f1":mean_f1,"mean_mcc":mean_mcc,"mean_auces":mean_auces,"mean_auses":mean_auses,
+        "std_f1":std_f1,"std_mcc":std_mcc,"std_auces":std_auces,"std_auses":std_auses
+        }
+    
+    pd.DataFrame(mean_std_results).to_csv(os.path.join(log_path, f"Final_eval_results_mean_std_{mode}"), index=False)
     
     logging.info('End training')
+    
+    

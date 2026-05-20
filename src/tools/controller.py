@@ -13,4 +13,11 @@ import h5py
 
 
 #gets number of classes
-train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, torch.tensor([x for x in range(256)]))
+print("RGB training started")
+train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="RGB"))
+print("D training started")
+train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="D"))
+print("RGBD training started")
+train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="RGBD"))
+print("RGBD TMC")
+train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="TMC"))

@@ -5,9 +5,12 @@ import concretedropout.pytorch as cd
 import numpy as np
 import torch
 import evaluate
+import pandas as pd
 from torch import nn
 from tqdm import tqdm
 from ..evaluate_uncertainty_maps import evaluate_uncertainty
+from torch.nn import ReLU
+import torch.nn.functional as F
 
 #from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
@@ -731,11 +734,13 @@ class UNet(BaseUNet):
             
             for j,x in enumerate(outputs):
                 predicted = x
-                target = target[j].numpy()
                 
-                predictions[img_id+j] = predicted
+                #The squeeze is to remove the channel dimension in preperation
+                target = torch.squeeze(target, dim=0)[j].numpy()
+                predictions[img_id+j] = torch.squeeze(predicted, dim=0)
 
-                evaluate.evaluate_image(confusion, results, img_id+j, predicted,target)
+
+                evaluate.evaluate_image(confusion, results, img_id+j, predictions.numpy(),target)
 
         # add summary statistics for eval
         results['img'].append('all')
@@ -758,811 +763,332 @@ class UNet(BaseUNet):
         #final return
         return f1_class_list, mcc, auces, auses
 
-# class ConformalBase(BaseUNet):
 
-#     '''Encoder network for conformal model'''
 
-#     def __init__(self, downsample, process, upsample, act, pool, device):
-#         '''Setup encoder
-
-#         Parameters
-#         ----------
-#         downsample : Module list for downsampling
-#         process : Module list for processing
-#         upsample : Module list for upsampling
-#         act : Activation function to use
-#         pool : Pooling function to use
-#         '''
-#         nn.Module.__init__(self)
-
-#         self._downsampling = downsample
-#         self._processing = process
-#         self._upsampling = upsample
-#         self._act = act
-#         self._pool = pool
-
-#         self.to(device)
-
-#     def forward(self, inputs):
-#         '''Run model on given input
-
-#         Parameters
-#         ----------
-#         inputs : Input tensor
-
-#         Returns
-#         -------
-#         Extracted features
-
-#         '''
-#         result, padding = self._pad(inputs)
-
-#         # downsampling
-#         result, skips = self._downsample(result, self._downsampling,
-#                                          self._act, self._pool)
-
-#         # processing
-#         result = self._process(result, self._processing, self._act)
-
-#         # upsampling
-#         if len(self._upsampling) > 0:
-#             result = self._upsample(result, skips, self._upsampling,
-#                                     self._act)
-
-#         return result, skips, padding
-
-
-# class ConformalHead(BaseUNet):
-
-#     '''Decoder network for conformal model '''
-
-#     def __init__(self, upsampling, act, output, device):
-#         '''Setup decoder
-
-#         Parameters
-#         ----------
-#         upsampling : Module list for upsampling
-#         act : Activation function to use
-#         output : Output layer
-#         '''
-#         nn.Module.__init__(self)
-
-#         self._upsampling = nn.ModuleList()
-#         for module in upsampling:
-#             # self._upsampling.append(deepcopy(module))
-#             self._upsampling.append(module)
-#         self._act = act
-#         self._output = output
-#         # self._act = deepcopy(act)
-#         # self._output = deepcopy(output)
-
-#         self.__skips = None
-#         self.__cal_idx = None
-#         self.__val_idx = None
-#         self.padding = None
-
-#         self.to(device)
-
-#     def forward(self, inputs):
-#         '''Run model on given input
-
-#         Parameters
-#         ----------
-#         inputs : Feature representation, intermediate representations
-
-#         Returns
-#         -------
-#         Predicted segmentation
-
-#         '''
-#         result = inputs
-
-#         # upsampling
-#         # select instances to be used for upsampling
-#         if (self.__cal_idx is None
-#                 or len(self.__skips) == 0
-#                 or result.shape[0] == self.__skips[0].shape[0]):
-#             skips = self.__skips
-#         else:
-#             skips = []
-#             if result.shape[0] == len(self.__cal_idx):
-#                 idx = self.__cal_idx
-#             elif result.shape[0] == len(self.__val_idx):
-#                 idx = self.__val_idx
-#             else:
-#                 raise RuntimeError(f'Unknown number of '
-#                                    f'instances: {result.shape[0]}')
-#             for skip in self.__skips:
-#                 skips.append(skip[idx])
-
-#         result = self._upsample(result, skips, self._upsampling,
-#                                 self._act)
-
-#         result = self._output(result)
-
-#         return result
-
-#     def update_skips(self, skips):
-#         '''Update tensors for skip connections
-
-#         Parameters
-#         ----------
-#         skips : Skip tensors
-#         to_cpu : Move skip tensors to CPU (Needed for auto_LiRPA)
-
-#         Returns
-#         -------
-#         self
-
-#         '''
-#         self.__skips = []
-#         # only copy the skips which are relevant for the upsampling included
-#         # in the head
-#         # Note: there are 4 modules for each layer in the upsampling path
-#         for skip in skips[:len(self._upsampling)//4]:
-#             skip = skip.detach()
-#             self.__skips.append(skip)
-#         return self
-
-#     def update_idxs(self, cal_idx, val_idx):
-#         '''Update indices of samples used for calibration and validation
-
-#         Parameters
-#         ----------
-#         cal_idx : Indices of the calibration instances
-#         val_idx : Indices of the validation instances
-
-#         Returns
-#         -------
-#         self
-
-#         '''
-#         self.__cal_idx = cal_idx
-#         self.__val_idx = val_idx
-
-#         return self
-
-#     def update_padding(self, padding):
-#         '''Update padding configuration
-
-#         Parameters
-#         ----------
-#         padding : Padding information
-
-#         Returns
-#         -------
-#         self
-
-#         '''
-#         self.padding = padding
-#         return self
-
-
-# class ConformalUNet(nn.Module):
-
-#     '''Model container class for feature conformal prediction based uncertainty
-#     quantification'''
-
-#     CALIBRATION_FILE = 'calibration_scores_dli{}.npz'
-
-#     @classmethod
-#     def default_loss(cls, inputs, targets):
-#         return torch.norm(inputs - targets) ** 2
-
-#     def __init__(self, trained_model, decoder_layer_idx,
-#                  upsample_steps_per_layer=4, device='cuda',
-#                  cert_optimizer='sgd', inv_lr=1e-2):
-#         '''Setup model based on pre-trained model
-
-#         Parameters
-#         ----------
-#         trained_model : Pre-trained model
-#         decoder_layer_idx : Index into decoder path at which to split the
-#                             model for feature extraction [0-4]
-#         upsample_steps_per_layer : Computation steps per layer, optional
-#         device : Device to run model on [cuda|cpu]
-#         cert_optimizer : Optimizer to use, optional
-#         inv_lr : Learning rate to use, optional
-#         '''
-#         nn.Module.__init__(self)
-
-#         layers = list(trained_model.children())
-#         idx = decoder_layer_idx * upsample_steps_per_layer
-#         self._encoder = ConformalBase(layers[0], layers[1], layers[2][:idx],
-#                                       layers[3], layers[4], device)
-#         self._decoder = ConformalHead(layers[2][idx:], layers[3], layers[5],
-#                                       device)
-
-#         self._feat_norm = np.inf
-#         self._err_func = FeatErrorErrFunc(feat_norm=np.inf)
-#         self._cert_optimizer = cert_optimizer
-#         self._inv_lr = inv_lr
-#         self._device = device
-#         self._inv_step = None
-#         self._decoder_layer_idx = decoder_layer_idx
-
-#         self.cal_scores = None
-
-#     def calibration_name(self):
-#         '''Get name of the calibration file
-#         Returns
-#         -------
-#         calibration file name
-
-#         '''
-#         return self.CALIBRATION_FILE.format(self._decoder_layer_idx)
-
-#     def log_name(self):
-#         '''Get log name
-#         Returns
-#         -------
-#         Log name
-
-#         '''
-#         return 'fcp'
-
-#     def load_calibration_scores(self, calibration_file):
-#         '''Load Calibration scores from file
-
-#         Parameters
-#         ----------
-#         calibration_file : Path to calibration file
-
-#         '''
-#         self.cal_scores = np.load(calibration_file)['cal_scores']
-
-#     def save_calibration_scores(self, calibration_file):
-#         '''Save calibration scores to file
-
-#         Parameters
-#         ----------
-#         calibration_file : Path to calibration file
-
-#         '''
-#         np.savez_compressed(calibration_file, cal_scores=self.cal_scores)
-
-#     def forward(self, inputs):
-#         '''Run model on given input
-
-#         Parameters
-#         ----------
-#         inputs : Input tensor
-
-#         Returns
-#         -------
-#         Predicted segmentation
-
-#         '''
-#         result, skips, padding = self._encoder(inputs)
-#         self._decoder.update_skips(skips).update_padding(padding)
-#         result = self._decoder(result)
-#         result = BaseUNet._unpad(result, padding)
-
-#         return result
-
-#     def calibrate(self, calib_it):
-#         '''Calibrate network
-
-#         Parameters
-#         ----------
-#         calib_it : Calibration data
-
-#         '''
-#         cal_scores = self._score(calib_it)
-#         self.cal_scores = np.sort(cal_scores, 0)[::-1]
-
-#     def predict(self, inputs, significance=0.1):
-#         '''Generate prediction intervals for given batch and set significance
-#            level
-
-#         Parameters
-#         ----------
-#         inputs : Input tensor
-#         significance : Significance level, optional
-
-#         Returns
-#         -------
-#         Prediction intervals for the batch
-#         [batch, classes*width*height, lower/upper bound]
-
-#         '''
-#         self.eval()
-
-#         n_test = inputs.shape[0]
-#         inputs = inputs.to(self._device).requires_grad_(False)
-#         # TODO this seems overkill
-#         predicted = self(inputs).cpu().detach().numpy()
-
-#         intervals = np.zeros((n_test, np.prod(predicted.shape[1:]), 2))
-#         feat_err_dist = self._err_func.apply_inverse(self.cal_scores,
-#                                                      significance)
-
-#         z, skips, padding = self._encoder(inputs)
-#         z = z.detach()
-#         self._decoder.update_skips(skips).update_padding(padding)
-
-#         lirpa_model = BoundedModule(self._decoder, torch.empty_like(z).cuda())
-#         ptb = PerturbationLpNorm(norm=np.inf, eps=feat_err_dist[0][0])
-#         my_input = BoundedTensor(z, ptb)
-
-#         lb, ub = lirpa_model.compute_bounds(x=(my_input,), method='IBP')
-#         lb = torch.exp(-torch.exp(lb))
-#         ub = torch.exp(-torch.exp(ub))
-#         lb, ub = lb.detach().cpu().numpy(), ub.detach().cpu().numpy()
-
-#         # TODO refactor
-#         lb = BaseUNet._unpad(lb, padding)
-#         ub = BaseUNet._unpad(ub, padding)
-#         # reverse the order, since reverting the double log changes what is the
-#         # upper and what is the lower bound
-#         intervals[..., 0] = ub.reshape((ub.shape[0], -1))
-#         intervals[..., 1] = lb.reshape((lb.shape[0], -1))
-
-#         return intervals
-
-#     def _score(self, calib_it):
-#         '''Score samples in the calibration set
-
-#         Parameters
-#         ----------
-#         calib_it : Calibration data
-
-#         Returns
-#         -------
-#         Scored samples
-
-#         '''
-#         if self._inv_step is None:
-#             self._inv_step = self._find_best_step_num(calib_it)
-
-#         print('calculating score:')
-#         ret_val = []
-#         for batch in tqdm(calib_it):
-#             inputs = batch['inputs'].to(self._device,
-#                                         dtype=batch['inputs'].dtype)
-#             target = batch['target'].to(self._device,
-#                                         dtype=batch['target'].dtype)
-
-#             norm = np.ones(len(inputs))
-
-#             z_pred, skips, padding = self._encoder(inputs)
-#             self._decoder.update_skips(skips).update_padding(padding)
-
-#             z_true = self._inv_g(z_pred, target, step=self._inv_step)
-#             z_pred = z_pred.view(z_pred.shape[0], -1)
-#             z_true = z_true.view(z_true.shape[0], -1)
-#             batch_ret_val = self._err_func.apply(z_pred.detach().cpu(),
-#                                                  z_true.detach().cpu())
-#             batch_ret_val = batch_ret_val.detach().cpu().numpy() / norm
-#             ret_val.append(batch_ret_val)
-#         ret_val = np.concatenate(ret_val, axis=0)
-
-#         return ret_val
-
-#     def _find_best_step_num(self, calib_it):
-#         '''Estimate number of steps needed to find "true" feature
-#         representation given a feature representation produced by the encoder
-#         and the actual labels
-
-#         Parameters
-#         ----------
-#         calib_it : Calibration data
-
-#         Returns
-#         -------
-#         Step number
-
-#         '''
-#         max_inv_steps = 200
-#         val_sig = 0.1
-
-#         acc_val_coverage = np.zeros(max_inv_steps)
-#         acc_val_num = 0
-#         print("begin to find the best step number")
-#         for batch in tqdm(calib_it):
-#             inputs = batch['inputs'].to(self._device,
-#                                         dtype=batch['inputs'].dtype)
-#             target = batch['target'].to(self._device,
-#                                         dtype=batch['target'].dtype)
-
-#             z_pred, skips, padding = self._encoder(inputs)
-#             self._decoder.update_skips(skips).update_padding(padding)
-#             each_step_val_coverage, val_num = self._coverage_tight(
-#                                                         inputs, target, z_pred,
-#                                                         steps=max_inv_steps,
-#                                                         val_sig=val_sig)
-#             acc_val_coverage += np.array(each_step_val_coverage) * val_num
-#             acc_val_num += val_num
-#             # release memory to avoid OOM
-#             del z_pred
-
-#         each_step_val_coverage = acc_val_coverage / acc_val_num
-
-#         tolerance = 3
-#         count = 0
-#         final_coverage, best_step = None, None
-#         for i, val_coverage in enumerate(each_step_val_coverage):
-#             if val_coverage > (1 - val_sig) * 100 and final_coverage is None:
-#                 count += 1
-#                 if count == tolerance:
-#                     final_coverage = val_coverage
-#                     best_step = i
-#             elif val_coverage <= (1 - val_sig) * 100 and count > 0:
-#                 count = 0
-
-#         if final_coverage is None or best_step is None:
-#             raise ValueError('Cannot find a good step to make the coverage '
-#                              'higher than {}'.format(1 - val_sig))
-
-#         print(f'The best inv_step is {best_step+1}, which gets '
-#               f'{final_coverage} coverage on val set')
-
-#         return best_step + 1
-
-#     def _coverage_tight(self, inputs, target, z_pred, steps, val_sig):
-#         '''Estimate coverage for different numbers of optimization steps
-
-#         Parameters
-#         ----------
-#         inputs : Input tensor
-#         target : Tensor of targets
-#         z_pred : Feature representation for batch
-#         steps : Maximum number of steps to try
-#         val_sig : Validation significance
-
-#         Returns
-#         -------
-#         Coverage values for each optimizer step, Number of validation samples
-#         used
-
-#         '''
-#         z_pred_detach = z_pred.detach().clone()
-
-#         idx = torch.randperm(len(z_pred_detach))
-#         n_val = int(np.floor(len(z_pred_detach) / 5))
-#         val_idx, cal_idx = idx[:n_val], idx[n_val:]
-
-#         cal_x, val_x = inputs[cal_idx], inputs[val_idx]
-#         cal_y, val_y = target[cal_idx], target[val_idx]
-#         cal_z_pred, val_z_pred = z_pred_detach[cal_idx], z_pred_detach[val_idx]
-#         self._decoder.update_idxs(cal_idx, val_idx)
-
-#         cal_score_list = self._get_each_step_err_dist(cal_x, cal_y, cal_z_pred,
-#                                                       steps=steps)
-#         print('cal score')
-#         print(torch.cuda.memory_summary())
-#         val_score_list = self._get_each_step_err_dist(val_x, val_y, val_z_pred,
-#                                                       steps=steps)
-#         print('val score')
-#         print(torch.cuda.memory_summary())
-
-#         val_coverage_list = []
-#         for i, (cal_score, val_score) in enumerate(zip(cal_score_list,
-#                                                        val_score_list)):
-#             err_dist_threshold = self._err_func.apply_inverse(
-#                                                     nc=cal_score,
-#                                                     significance=val_sig)[0][0]
-#             val_coverage = np.sum(val_score < err_dist_threshold) * 100
-#             val_coverage /= len(val_score)
-#             val_coverage_list.append(val_coverage)
-
-#         return val_coverage_list, len(val_x)
-
-#     def _get_each_step_err_dist(self, inputs, target, z_pred, steps):
-#         '''Calculate the distance between the predicted feature representation
-#         and the "optimal" feature representation
-
-#         Parameters
-#         ----------
-#         inputs : Input tensor
-#         target : Tensor of targets
-#         z_pred : Feature representation for batch
-#         steps : Maximum number of steps to try
-
-#         Returns
-#         -------
-#         List of distances per step
-
-#         '''
-#         each_step_z_true = self._inv_g(z_pred, target, step=steps,
-#                                        record_each_step=True)
-
-#         norm = np.ones(len(inputs))
-
-#         err_dist_list = []
-#         z_pred = z_pred.view(z_pred.shape[0], -1)
-#         for i, step_z_true in enumerate(each_step_z_true):
-#             step_z_true = step_z_true.view(step_z_true.shape[0], -1)
-#             err_dist = self._err_func.apply(z_pred.detach().cpu(),
-#                                             step_z_true.detach().cpu())
-#             err_dist = err_dist.numpy() / norm
-#             err_dist_list.append(err_dist)
-
-#         return err_dist_list
-
-#     def _inv_g(self, z_pred, target, step=None, record_each_step=False):
-#         '''Perform given number of optimizer steps to find "optimal" feature
-#            representation for given samples
-
-#         Parameters
-#         ----------
-#         z_pred : Feature representation for batch
-#         target : Tensor of targets
-#         step : Number of optimizer steps to perform, optional
-#         record_each_step : Return feature representation for each step,
-#                            optional
-
-#         Returns
-#         -------
-#         "optimal" feature representation or list of "optimal" feature
-#         representations
-
-#         '''
-#         z = z_pred.detach().clone()
-#         z = z.detach()
-#         z.requires_grad_()
-#         if self._cert_optimizer == "sgd":
-#             optimizer = torch.optim.SGD([z], lr=self._inv_lr)
-#         elif self._cert_optimizer == "adam":
-#             optimizer = torch.optim.Adam([z], lr=self._inv_lr)
-
-#         self.eval()
-#         each_step_z = []
-#         for _ in range(step):
-#             pred = self._decoder(z)
-
-#             pred = BaseUNet._unpad(pred, self._decoder.padding)
-#             loss = ConformalUNet.default_loss(pred.squeeze(), target)
-#             optimizer.zero_grad()
-#             loss.backward()
-#             optimizer.step()
-#             if record_each_step:
-#                 each_step_z.append(z.detach().cpu().clone())
-
-#         if record_each_step:
-#             return each_step_z
-#         else:
-#             return z.detach().cpu()
-
-
-# class FeatErrorErrFunc:
-
-#     def __init__(self, feat_norm):
-#         super(FeatErrorErrFunc, self).__init__()
-#         self.feat_norm = feat_norm
-
-#     def apply(self, prediction, z):
-#         ret = (prediction - z).norm(p=self.feat_norm, dim=1)
-#         return ret
-
-#     def apply_inverse(self, nc, significance):
-#         nc = np.sort(nc)[::-1]
-#         border = int(np.floor(significance * (nc.size + 1))) - 1
-#         border = min(max(border, 0), nc.size - 1)
-
-#         return np.vstack([nc[border], nc[border]])
-
-
-# class ConformalRegressor:
-
-#     '''Wrapper class for implementation of conformal regression.
-#        This method performs uncertaity quantification using normalized
-#        inductive conformal regression separately for each class.
-#     '''
-
-#     def __init__(self, trained_model, samples, batch_size, device='cuda'):
-#         '''Setup wrapper
-
-#         Parameters
-#         ----------
-#         trained_model : Pre-trained model
-#         samples : Number of Monte Carlo samples
-#         batch_size : Maximum batch size to process at once
-#         '''
-
-#         self._model = trained_model
-#         self._samples = samples
-#         self._batch_size = batch_size
-
-#         self.cal_scores_uncond = None
-#         self.cal_scores_cond = None
-#         self._device = device
-
-#     def calibration_name(self):
-#         '''Get name of the calibration file
-#         Returns
-#         -------
-#         calibration file name
-
-#         '''
-#         return 'cr_calibration_scores.npz'
-
-#     def log_name(self):
-#         '''Get log name
-#         Returns
-#         -------
-#         Log name
-
-#         '''
-#         return 'cr'
-
-#     def load_calibration_scores(self, calibration_file):
-#         '''Load Calibration scores from file
-
-#         Parameters
-#         ----------
-#         calibration_file : Path to calibration file
-
-#         '''
-#         data = np.load(calibration_file)
-#         self.cal_scores_uncond = data['cal_scores_uncond']
-#         self.cal_scores_cond = [[data['p_cls_0'], data['n_cls_0']], 
-#                                 [data['p_cls_1'], data['n_cls_1']], 
-#                                 [data['p_cls_2'], data['n_cls_2']]] 
-
-#     def save_calibration_scores(self, calibration_file):
-#         '''Save calibration scores to file
-
-#         Parameters
-#         ----------
-#         calibration_file : Path to calibration file
-
-#         '''
-#         np.savez_compressed(calibration_file,
-#                             cal_scores_uncond=self.cal_scores_uncond,
-#                             p_cls_0=self.cal_scores_cond[0][0],
-#                             p_cls_1=self.cal_scores_cond[1][0],
-#                             p_cls_2=self.cal_scores_cond[2][0],
-#                             n_cls_0=self.cal_scores_cond[0][1],
-#                             n_cls_1=self.cal_scores_cond[1][1],
-#                             n_cls_2=self.cal_scores_cond[2][1])
-
-#     def calibrate(self, calib_it):
-#         '''Calibrate network
-
-#         Parameters
-#         ----------
-#         calib_it : Calibration data
-
-#         '''
-#         cal_scores_uncond, cal_scores_cond = self._score(calib_it)
-#         for uncond, cond in zip(cal_scores_uncond, cal_scores_cond):
-#             uncond.sort()
-#             cond[0].sort()
-#             cond[1].sort()
-#         self.cal_scores_uncond = cal_scores_uncond
-#         self.cal_scores_cond = cal_scores_cond
-
-#     def _score(self, calib_it):
-#         '''Score samples in the calibration set
-
-#         Parameters
-#         ----------
-#         calib_it : Calibration data
-
-#         Returns
-#         -------
-#         Unconditionally scored samples [classes, scores], Conditionally scored
-#         samples [classes, scores]
-
-#         '''
-#         print('calculating score:')
-#         uncond_val = []
-#         cond_val = []
-#         self._model._set_mc_dropout(True)
-#         for batch in tqdm(calib_it):
-#             inputs = batch['inputs'].to(self._device,
-#                                         dtype=batch['inputs'].dtype)
-#             target = batch['target']
-
-#             for x, y in zip(inputs, target):
-#                 # perform MC dropout
-#                 means, stds = self._perform_mc_dropout(x[None, :, :, :])
-
-#                 # calculate scores as |y - mu|/e^std
-#                 numerator = np.abs(y - means)
-#                 scores = numerator / np.e**stds
-
-#                 # store scores per class
-#                 for i, score in enumerate(scores):
-#                     pred_select = means[i].flatten()
-#                     scores = score.flatten()
-#                     # take scores clustered by predicted value separated into
-#                     # two clusters - positive and negative class
-#                     selected_pos = scores[pred_select >= 0.5]
-#                     selected_neg = scores[pred_select < 0.5]
-#                     if len(uncond_val) - 1 < i:
-#                         uncond_val.append(score.flatten())
-#                         cond_val.append([selected_pos, selected_neg])
-#                     else:
-#                         uncond_val[i] = np.concatenate([uncond_val[i],
-#                                                         score.flatten()])
-#                         cond_val[i][0] = np.concatenate([cond_val[i][0], selected_pos])
-#                         cond_val[i][1] = np.concatenate([cond_val[i][1], selected_neg])
-
-#         return uncond_val, cond_val
-
-#     def predict(self, inputs, significance=0.1):
-#         '''Generate prediction intervals for given batch and set significance
-#            level
-
-#         Parameters
-#         ----------
-#         inputs : Input tensor
-#         significance : Significance level, optional
-
-#         Returns
-#         -------
-#         Prediction intervals for the batch
-#         [classes, width, height, lower/upper bound], Mean prediction
-
-#         '''
-#         # perform MC dropout
-#         image = inputs.to(self._device, dtype=inputs.dtype)
-#         assert image.shape[0] == 1, 'Process one image at a time'
-
-#         means, stds = self._perform_mc_dropout(image)
-
-#         # extract scores
-#         uncond_scores = np.zeros((len(self.cal_scores_uncond), 1, 1))
-#         cond_scores_pos = np.zeros((len(self.cal_scores_cond), 1, 1))
-#         cond_scores_neg = np.zeros((len(self.cal_scores_cond), 1, 1))
-#         for i, cal_score in enumerate(self.cal_scores_uncond):
-#             idx = int(np.floor((1-significance) * len(cal_score)))
-#             uncond_scores[i] = cal_score[idx]
-
-#         for i, cal_score in enumerate(self.cal_scores_cond):
-#             idx_pos = int(np.floor((1-significance) * len(cal_score[0])))
-#             cond_scores_pos[i] = cal_score[0][idx_pos]
-#             idx_neg = int(np.floor((1-significance) * len(cal_score[1])))
-#             cond_scores_pos[i] = cal_score[1][idx_neg]
-
-#         # calculate upper and lower bound as mu + score_0.1 * e^std
-#         uncond_intervals = np.zeros((*means.shape, 2))
-#         uncond_bound = uncond_scores * np.e**stds
-#         cond_intervals = np.zeros((*means.shape, 2))
-#         # blend scores based on predicted value
-#         cond_scores = means * cond_scores_pos + (1 - means) * cond_scores_neg
-#         # scale scores based on difficulty
-#         cond_bound = cond_scores * np.e**stds
-
-#         # do not perform value clipping since we are actually most interested
-#         # in 2*bound, since we interpret this as uncertainty
-#         uncond_intervals[..., 0] = means - uncond_bound
-#         uncond_intervals[..., 1] = means + uncond_bound
-#         cond_intervals[..., 0] = means - cond_bound
-#         cond_intervals[..., 1] = means + cond_bound
-
-#         return uncond_intervals, cond_intervals, means
-
-#     def _perform_mc_dropout(self, image):
-#         '''Rum MC dropout for given image using batch_size and samples with
-#         which the ConformalRegressor was initialized
-
-#         Parameters
-#         ----------
-#         image : Image tensor [1, classes, height, width]
-
-#         Returns
-#         -------
-#         Dropout means [classes, height, width],
-#         Dropout std [classes, height, width]
-
-#         '''
-#         self._model._set_mc_dropout(True)
-
-#         mc_batch = image.repeat(self._batch_size, 1, 1, 1)
-#         repeats = self._samples // self._batch_size
-#         outputs = []
-#         for _ in range(repeats):
-#             predicted = self._model.proba(mc_batch)
-#             outputs.append(predicted)
-
-#         # estimate mean and std for each class and each pixel
-#         samples = np.concatenate(outputs)
-#         means = samples.mean(axis=0)
-#         stds = samples.std(axis=0)
-
-#         self._model._set_mc_dropout(False)
-
-#         return means, stds
+class MultiViewFusionRGBD(nn.Module):
+    def __init__(self,classes, lamda_epochs = 1, device = "cuda"):
+        MultiViewFusionRGBD.__init__(self)
+        
+        #rgb, d u-nets
+        self.rgb_unet = UNet(3,classes,"rgb",device)
+        self.depth_unet = UNet(1,classes,"d",device)
+    
+        self.classes = classes
+        self.lamda_epochs = lamda_epochs
+    
+    #https://github.com/Han-Zongbo/TMC/blob/main/TMC%20ICLR/model.py
+    def forward(self, rgb_images, depth_images):
+        batch_len = rgb_images.shape[0]
+        height_len = rgb_images.shape[2]
+        width_len = rgb_images.shape[3]
+        
+        #normal predictions
+        rgb_prediction   = self.rgb_unet(rgb_images) #(batch, channel, height, width)
+        depth_prediction = self.depth_unet(depth_images)
+        
+        #dirchlet distribution evidence based on TMC
+        rgb_evidence   = ReLU()(rgb_prediction)+1
+        depth_evidence = ReLU()(depth_prediction)+1
+        evidence = torch.cat([rgb_evidence,depth_evidence],dim=1) # (batch, 2, height, width)
+        
+        #combination of evidence and final prediction generation
+        alpha_a = torch.zeros((batch_len,1,height_len,width_len))
+        final_prediction = torch.zeros((batch_len,len(self.classes),height_len,width_len)) # (batch, classes, height, width)
+        for batch in range(batch_len):
+            for height_idx in range(height_len):
+                for width_idx in range(width_len):
+                    #combination of evidence
+                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(evidence[batch,:,height_idx,width_idx])
+                    evidence_a  = alpha_a-1
+                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
+        
+        
+        return final_prediction
+        
+        
+    def loss_forward(self, rgb_images, depth_images, gt_mask, global_step):
+        loss = 0
+        batch_len = rgb_images.shape[0]
+        height_len = rgb_images.shape[2]
+        width_len = rgb_images.shape[3]
+        
+        #normal predictions
+        rgb_prediction   = self.rgb_unet(rgb_images) #(batch, channel, height, width)
+        depth_prediction = self.depth_unet(depth_images)
+        
+        #dirchlet distribution evidence based on TMC
+        rgb_evidence   = ReLU()(rgb_prediction)+1
+        depth_evidence = ReLU()(depth_prediction)+1
+        evidence = torch.cat([rgb_evidence,depth_evidence],dim=1) # (batch, 2, height, width)
+        
+        #combination of evidence and final prediction generation
+        alpha_a = torch.zeros((batch_len,1,height_len,width_len))
+        final_prediction = torch.zeros((batch_len,len(self.classes),height_len,width_len)) # (batch, classes, height, width)
+        for batch in range(batch_len):
+            for height_idx in range(height_len):
+                for width_idx in range(width_len):
+                    #loss calculation
+                    temp_loss = 0
+                    count = 0
+                    for classifier_evidence in evidence[batch,:,height_idx,width_idx]:
+                        temp_loss += self.ce_loss(gt_mask[batch,0,height_idx,width_idx], classifier_evidence, len(self.classes), global_step, self.lamda_epochs)
+                        count += 1
+                    loss += temp_loss / count
+                    
+                    #combination of evidence
+                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(evidence[batch,:,height_idx,width_idx])
+                    evidence_a  = alpha_a-1
+                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
+                    
+                    loss += self.ce_loss(gt_mask[batch,0,height_idx,width_idx], alpha_a, len(self.classes), global_step, self.lamda_epochs )
+        
+        loss = loss / (batch_len*height_len*width_len)
+        
+        return final_prediction, loss
+    
+    def _train(self, train_it, optimizer, epoch):
+        '''Train model on epoch
+
+        Parameters
+        ----------
+        train_it : Training data
+        criterion : Training criterion
+        optimizer : Optimizer
+        metric : Metric
+
+        Returns
+        -------
+        Training loss, metric output
+
+        '''
+        self.train()
+        epoch_loss = 0.0
+
+        for batch_idx,(rgb, depth, target) in enumerate(train_it):
+            target = target.to(self._device)
+
+            rgb_inputs = rgb.to(self._device)
+            depth_inputs = depth.to(self._device)
+
+            _, loss = self.loss_forward(rgb_inputs, depth_inputs, target, epoch)
+
+            # add dropout regularization
+            reg = torch.zeros(1)  # get the regularization term
+            for module in filter(lambda x: isinstance(x, cd.ConcreteDropout2D),
+                                 self.modules()):
+                reg += module.regularization
+            loss += reg
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+        return epoch_loss/len(train_it)
+        
+    def _validate(self, valid_it, epoch):
+        '''Validate model
+
+        Parameters
+        ----------
+        valid_it : Validation data
+        criterion : Training criterion
+        metric : Metric
+
+        Returns
+        -------
+        Validation loss, validation metric
+
+        '''
+        self.eval()
+        epoch_loss = 0.0
+
+        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
+            target = target.to(self._device)
+
+            rgb_inputs = rgb.to(self._device)
+            depth_inputs = depth.to(self._device)
+
+            with torch.no_grad():
+                _, loss = self.loss_forward(rgb_inputs, depth_inputs, target, epoch)
+
+            epoch_loss += loss.item()
+
+        return epoch_loss/len(valid_it)
+        
+    def fit(self, train_it, valid_it, epochs, log_dir):
+        '''Train model
+
+        Parameters
+        ----------
+        train_it : Training data
+        valid_it : Validation data
+        epochs : Number of epochs to train
+        log_dir : Folder to which logging information is saved
+        '''
+        
+        optimizer = torch.optim.Adam(self.parameters())
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
+        checkpoint = ModelCheckpoint(log_dir, self, optimizer)
+
+        epoch_columns = []
+        training_losses = []
+        validation_losses = []
+
+        for epoch in tqdm(range(epochs)):
+            epoch_columns.append(f"Epoch {epoch}")
+            
+            train_loss = self._train(train_it, optimizer, epoch)
+            training_losses.append(train_loss)
+            scheduler.step(train_loss)
+
+            valid_loss = self._validate(valid_it, epoch)
+            validation_losses.append(valid_loss)
+            checkpoint.update(epoch, valid_loss)
+        
+        pd.DataFrame([epoch_columns,training_losses,validation_losses]).to_csv(os.path.join(log_dir, "Training_and_validation_TMC"), index=False)
+        
+    def final_evaluation(self, valid_it, classes, log_path):
+        self.eval()
+
+        #Prep for eval
+        results = {'img': [], 'mcc': []}
+        confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
+        predictions = torch.zeros((valid_it.shape[0]*valid_it.shape[1],valid_it.shape[2],valid_it.shape[3]))
+        for cls_id in classes:
+            results[f'f_{cls_id}'] = []
+
+
+        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
+            target = target.to(self._device)
+
+            rgb_inputs = rgb.to(self._device)
+            depth_inputs = depth.to(self._device)
+
+            with torch.no_grad():
+                outputs = self.forward(rgb_inputs,depth_inputs)
+                
+            # process images
+            img_id = batch_idx*target.shape[0]
+            
+            for j,x in enumerate(outputs):
+                predicted = x
+                
+                #The squeeze is to remove the channel dimension in preperation
+                target = torch.squeeze(target, dim=0)[j].numpy()
+                predictions[img_id+j] = torch.squeeze(predicted, dim=0)
+
+
+                evaluate.evaluate_image(confusion, results, img_id+j, predictions.numpy(),target)
+
+        # add summary statistics for eval
+        results['img'].append('all')
+        f1_class_list = []
+        for cls_id in confusion:
+            f1_measure = evaluate.calculate_f_measure(
+                                                    confusion[cls_id]['tp'],
+                                                    confusion[cls_id]['fp'],
+                                                    confusion[cls_id]['fn'])
+            results[f'f_{cls_id}'].append(f1_measure)
+            f1_class_list.append((cls_id,f1_measure))
+        mcc = evaluate.calculate_mcc(confusion)
+        results['mcc'].append(mcc)
+        
+        
+        #results for uncertainity
+        auces, auses = evaluate_uncertainty(valid_it, predictions, classes, log_path)
+        
+        
+        #final return
+        return f1_class_list, mcc, auces, auses
+    
+    def load(self, model_path):
+        '''Load model weights from given path
+
+        Parameters
+        ----------
+        model_path : Path to the model
+
+        '''
+        checkpoint = torch.load(model_path)
+        self.load_state_dict(checkpoint['state_dict'])
+
+    # loss function
+    def KL(alpha, c):
+        beta = torch.ones((1, c)).cuda()
+        S_alpha = torch.sum(alpha, dim=1, keepdim=True)
+        S_beta = torch.sum(beta, dim=1, keepdim=True)
+        lnB = torch.lgamma(S_alpha) - torch.sum(torch.lgamma(alpha), dim=1, keepdim=True)
+        lnB_uni = torch.sum(torch.lgamma(beta), dim=1, keepdim=True) - torch.lgamma(S_beta)
+        dg0 = torch.digamma(S_alpha)
+        dg1 = torch.digamma(alpha)
+        kl = torch.sum((alpha - beta) * (dg1 - dg0), dim=1, keepdim=True) + lnB + lnB_uni
+        return kl
+
+
+    def ce_loss(p, alpha, c, global_step, annealing_step):
+        S = torch.sum(alpha, dim=1, keepdim=True)
+        E = alpha - 1
+        label = F.one_hot(p, num_classes=c)
+        A = torch.sum(label * (torch.digamma(S) - torch.digamma(alpha)), dim=1, keepdim=True)
+
+        annealing_coef = min(1, global_step / annealing_step)
+
+        alp = E * (1 - label) + 1
+        B = annealing_coef * self.KL(alp, c)
+
+        return (A + B)
+
+    def DS_Combin(self, alpha):
+        """
+        :param alpha: All Dirichlet distribution parameters.
+        :return: Combined Dirichlet distribution parameters.
+        """
+        def DS_Combin_two(alpha1, alpha2):
+            """
+            :param alpha1: Dirichlet distribution parameters of view 1
+            :param alpha2: Dirichlet distribution parameters of view 2
+            :return: Combined Dirichlet distribution parameters
+            """
+            alpha = dict()
+            alpha[0], alpha[1] = alpha1, alpha2
+            b, S, E, u = dict(), dict(), dict(), dict()
+            for v in range(2):
+                S[v] = torch.sum(alpha[v], dim=1, keepdim=True)
+                E[v] = alpha[v]-1
+                b[v] = E[v]/(S[v].expand(E[v].shape))
+                u[v] = self.classes/S[v]
+
+            # b^0 @ b^(0+1)
+            bb = torch.bmm(b[0].view(-1, self.classes, 1), b[1].view(-1, 1, self.classes))
+            # b^0 * u^1
+            uv1_expand = u[1].expand(b[0].shape)
+            bu = torch.mul(b[0], uv1_expand)
+            # b^1 * u^0
+            uv_expand = u[0].expand(b[0].shape)
+            ub = torch.mul(b[1], uv_expand)
+            # calculate C
+            bb_sum = torch.sum(bb, dim=(1, 2), out=None)
+            bb_diag = torch.diagonal(bb, dim1=-2, dim2=-1).sum(-1)
+            # bb_diag1 = torch.diag(torch.mm(b[v], torch.transpose(b[v+1], 0, 1)))
+            C = bb_sum - bb_diag
+
+            # calculate b^a
+            b_a = (torch.mul(b[0], b[1]) + bu + ub)/((1-C).view(-1, 1).expand(b[0].shape))
+            # calculate u^a
+            u_a = torch.mul(u[0], u[1])/((1-C).view(-1, 1).expand(u[0].shape))
+
+            # calculate new S
+            S_a = self.classes / u_a
+            # calculate new e_k
+            e_a = torch.mul(b_a, S_a.expand(b_a.shape))
+            alpha_a = e_a + 1
+            return alpha_a
+
+        for v in range(len(alpha)-1):
+            if v==0:
+                alpha_a = DS_Combin_two(alpha[0], alpha[1])
+            else:
+                alpha_a = DS_Combin_two(alpha_a, alpha[v+1])
+        return alpha_a
