@@ -31,7 +31,7 @@ class RGBD_Segmentation_Dataset(Dataset):
             mask = self.mask_images[index]
             
             if self.transform:
-                rgb, depth, mask = self.transform((rgb, depth, mask))    
+                rgb, depth, mask = self.transform((rgb, depth, mask))
             
             return rgb, depth, mask
 
@@ -84,11 +84,11 @@ class SUNRGBDDataset1(Dataset):
             ).permute(2, 0, 1).float()
 
             # Depth (1, H, W)
-            depth = Image.open(os.path.join(root, depth_path))
+            depth = Image.open(os.path.join(self.root, depth_path))
             depth = depth.resize((W, H))
-            self.depth_images[i] = torch.from_numpy(
-                np.array(depth, dtype=np.uint8)
-            ).unsqueeze(0).float()
+            depth_np = np.array(depth, dtype=np.float32)
+            depth_np = depth_np / depth_np.max() * 255.0 
+            depth = torch.from_numpy(depth_np).unsqueeze(0).float()
 
             # Mask (1, H, W)
             mask = Image.open(os.path.join(root, label_path))
@@ -143,7 +143,7 @@ class SUNRGBDDataset2(Dataset):
                         rgb_path, depth_path, label_path = parts
                         self.samples.append((rgb_path, depth_path, label_path))
 
-        print(f'Found {len(self.samples)} samples (lazy loading — '
+        print(f'Found {len(self.samples)} samples '
               f'images will be read from disk on demand)')
 
         self.classes = self._scan_classes()
@@ -165,9 +165,9 @@ class SUNRGBDDataset2(Dataset):
         # Depth (1, H, W)
         depth = Image.open(os.path.join(self.root, depth_path))
         depth = depth.resize((W, H))
-        depth = torch.from_numpy(
-            np.array(depth, dtype=np.uint8)
-        ).unsqueeze(0).float()
+        depth_np = np.array(depth, dtype=np.float32)
+        depth_np = depth_np / depth_np.max() * 255.0
+        depth = torch.from_numpy(depth_np).unsqueeze(0).float()
 
         # Mask (1, H, W)
         mask = Image.open(os.path.join(self.root, label_path))
