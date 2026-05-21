@@ -111,46 +111,42 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     
     torch.manual_seed(seed)
 
-    
+    torch.cuda.empty_cache()
+
     logging.info('Start training')
     #saves the final results from each fold for the final evaluation
     results = []
     
-    
-    
     splits = 10
     split_range = [1 / splits for _ in range(splits)]
-    folds = random_split(dataset, split_range,generator=torch.Generator('cuda').manual_seed(seed))
+    folds = random_split(dataset, split_range)
     for fold in range(splits):
         logging.info(f'Fold {fold} training has started')
         print(f'Fold {fold} training has started')
         
         #in channels, how many output classes
         if mode == "RGB":
-            model = unet.UNet(3, class_list, )
+            model = unet.UNet(3, class_list, mode)
         elif mode == "D":
-            model = unet.UNet(1, class_list)
+            model = unet.UNet(1, class_list, mode)
         elif mode == "RGBD": 
-            model = unet.UNet(4, class_list)
+            model = unet.UNet(4, class_list, mode)
         elif mode == "TMC":
-            model = unet.MultiViewFusionRGBD(class_list)
+            model = unet.MultiViewFusionRGBD(class_list, mode)
         print("Model created")
 
-        train_set = folds[fold]
-        valid_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
+        train_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
+        valid_set = folds[fold]
         print("Datasets concatenated")
         
         #  Dataloaders here
         train_it = torch.utils.data.DataLoader(
-                                train_set, shuffle=False,
-                                batch_size=batch_size, num_workers=0,
-                                generator=torch.Generator('cuda')
-                                                .manual_seed(seed))
+                                        train_set, shuffle=False,
+                                        batch_size=batch_size, num_workers=0)
+                                
         valid_it = torch.utils.data.DataLoader(
                                         valid_set, shuffle=False,
-                                        batch_size=batch_size, num_workers=0,
-                                        generator=torch.Generator('cuda')
-                                                    .manual_seed(seed))
+                                        batch_size=batch_size, num_workers=0)
         
         #Training
         print("Starting model fitting")
@@ -170,6 +166,8 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         
         logging.info(f'Fold {fold} training has ended')
         
+        del model
+        torch.cuda.empty_cache()
         
     #save results from evaluation
     pd.DataFrame(results).to_csv(os.path.join(log_path, f"Final_eval_results_{mode}"), index=False)

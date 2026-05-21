@@ -8,7 +8,7 @@ import evaluate
 import pandas as pd
 from torch import nn
 from tqdm import tqdm
-from ..evaluate_uncertainty_maps import evaluate_uncertainty
+from evaluate_uncertainty_maps import evaluate_uncertainty
 from torch.nn import ReLU
 import torch.nn.functional as F
 
@@ -638,7 +638,7 @@ class UNet(BaseUNet):
         self.train()
         epoch_loss = 0.0
         metric.reset()
-        
+
         for (rgb, depth, target) in train_it:
             target = target.to(self._device)
 
@@ -647,26 +647,27 @@ class UNet(BaseUNet):
             elif self._mode == "D":
                 inputs = depth.to(self._device)
             elif self._mode == "RGBD":
-                inputs = torch.cat([rgb,depth],dim=1).to(self._device)
+                inputs = torch.cat([rgb, depth], dim=1).to(self._device)
 
-            outputs = self(inputs)
+            optimizer.zero_grad(set_to_none=True)
 
-            # add dropout regularization
-            reg = torch.zeros(1)  # get the regularization term
-            for module in filter(lambda x: isinstance(x, cd.ConcreteDropout2D),
-                                 self.modules()):
-                reg += module.regularization
-            loss = criterion(outputs, target) + reg
+            with torch.cuda.amp.autocast():
+                outputs = self(inputs)
+                
+                reg_terms = [m.regularization
+                            for m in self.modules()
+                            if isinstance(m, cd.ConcreteDropout2D)]
+                reg = torch.stack(reg_terms).sum() if reg_terms else torch.tensor(0.0)
 
-            optimizer.zero_grad()
+                loss = criterion(outputs, target) + reg
+
             loss.backward()
             optimizer.step()
 
             epoch_loss += loss.item()
-
             metric.add(outputs.detach(), target.detach())
 
-        return epoch_loss/len(train_it), metric.value()
+        return epoch_loss / len(train_it), metric.value()
 
     def _validate(self, valid_it, criterion, metric):
         '''Validate model
@@ -708,13 +709,12 @@ class UNet(BaseUNet):
     def final_evaluation(self, valid_it, classes, log_path):
         self.eval()
 
-        #Prep for eval
         results = {'img': [], 'mcc': []}
         confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
-        predictions = torch.zeros((valid_it.shape[0]*valid_it.shape[1],valid_it.shape[2],valid_it.shape[3]))
         for cls_id in classes:
             results[f'f_{cls_id}'] = []
 
+        collected_predictions = []
 
         for batch_idx, (rgb, depth, target) in enumerate(valid_it):
             target = target.to(self._device)
@@ -724,25 +724,22 @@ class UNet(BaseUNet):
             elif self._mode == "D":
                 inputs = depth.to(self._device)
             elif self._mode == "RGBD":
-                inputs = torch.cat([rgb,depth],dim=1).to(self._device)
+                inputs = torch.cat([rgb, depth], dim=1).to(self._device)
 
             with torch.no_grad():
                 outputs = self(inputs)
                 
-            # process images
-            img_id = batch_idx*target.shape[0]
+            img_id = batch_idx * inputs.shape[0]
             
-            for j,x in enumerate(outputs):
-                predicted = x
+            for j, x in enumerate(outputs):
+
+                pred_np = x.squeeze(0).cpu().numpy()
+                collected_predictions.append(pred_np)
                 
-                #The squeeze is to remove the channel dimension in preperation
-                target = torch.squeeze(target, dim=0)[j].numpy()
-                predictions[img_id+j] = torch.squeeze(predicted, dim=0)
+                target_np = torch.squeeze(target, dim=0)[j].cpu().numpy()
 
+                evaluate.evaluate_image(confusion, results, img_id + j, np.expand_dims(pred_np, axis=0), target_np)
 
-                evaluate.evaluate_image(confusion, results, img_id+j, predictions.numpy(),target)
-
-        # add summary statistics for eval
         results['img'].append('all')
         f1_class_list = []
         for cls_id in confusion:
@@ -751,18 +748,15 @@ class UNet(BaseUNet):
                                                     confusion[cls_id]['fp'],
                                                     confusion[cls_id]['fn'])
             results[f'f_{cls_id}'].append(f1_measure)
-            f1_class_list.append((cls_id,f1_measure))
+            f1_class_list.append((cls_id, f1_measure))
         mcc = evaluate.calculate_mcc(confusion)
         results['mcc'].append(mcc)
         
+        predictions_final = torch.from_numpy(np.stack(collected_predictions))
         
-        #results for uncertainity
-        auces, auses = evaluate_uncertainty(valid_it, predictions, classes, log_path)
+        auces, auses = evaluate_uncertainty(valid_it, predictions_final, classes, log_path)
         
-        
-        #final return
         return f1_class_list, mcc, auces, auses
-
 
 
 class MultiViewFusionRGBD(nn.Module):
@@ -879,7 +873,7 @@ class MultiViewFusionRGBD(nn.Module):
                 reg += module.regularization
             loss += reg
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
@@ -1015,7 +1009,7 @@ class MultiViewFusionRGBD(nn.Module):
         self.load_state_dict(checkpoint['state_dict'])
 
     # loss function
-    def KL(alpha, c):
+    def KL(self, alpha, c):
         beta = torch.ones((1, c)).cuda()
         S_alpha = torch.sum(alpha, dim=1, keepdim=True)
         S_beta = torch.sum(beta, dim=1, keepdim=True)
@@ -1027,7 +1021,7 @@ class MultiViewFusionRGBD(nn.Module):
         return kl
 
 
-    def ce_loss(p, alpha, c, global_step, annealing_step):
+    def ce_loss(self, p, alpha, c, global_step, annealing_step):
         S = torch.sum(alpha, dim=1, keepdim=True)
         E = alpha - 1
         label = F.one_hot(p, num_classes=c)

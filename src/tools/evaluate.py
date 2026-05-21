@@ -23,7 +23,10 @@ def calculate_f_measure(tp, fp, fn):
     F1-score
 
     '''
-    return (2*tp) / (2*tp + fp + fn)
+    if (2 * tp + fp + fn) == 0:
+        return 0.0
+        
+    return (2 * tp) / (2 * tp + fp + fn)
 
 
 def calculate_mcc(confusion):

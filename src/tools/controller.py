@@ -11,16 +11,24 @@ import utils.util as util
 
 import h5py
 
-datapath = "../../data/nyu_v2/nyu_depth_v2_labeled.mat"
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+datapath = "/home/beax22tr/nyu_depth_v2_labeled.mat"
 #datapath = "../../../../home/data/epsilon/nyu_depth_v2_labeled.mat"
+
+epochs = 1
+batch_size = 4
 
 #gets number of classes
 print("RGB training started")
-train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="RGB"))
+train.rgbd_train(datapath, "./logs", 42, epochs, batch_size, class_list=None, mode="RGB")
 print("D training started")
-train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="D"))
+train.rgbd_train(datapath, "./logs", 42, epochs, batch_size, class_list=None, mode="D")
 print("RGBD training started")
-train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="RGBD"))
+train.rgbd_train(datapath, "./logs", 42, epochs, batch_size, class_list=None, mode="RGBD")
 print("TMC training started")
-train.rgbd_train("../../data/nyu_v2/nyu_depth_v2_labeled.mat", "../../logs", 42, 2, 64, class_list=torch.tensor([x for x in range(256)], mode="TMC"))
+train.rgbd_train(datapath, "./logs", 42, epochs, batch_size, class_list=None, mode="TMC")
 print("All training completed")

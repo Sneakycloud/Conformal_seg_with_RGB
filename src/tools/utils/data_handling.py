@@ -18,28 +18,37 @@ from os.path import dirname, join as pjoin
 class RGBD_Segmentation_Dataset(Dataset):
     def __init__(self, folder_path, transform):
         super(RGBD_Segmentation_Dataset, self).__init__()
-        with h5py.File(folder_path,'r') as f:
-            self.rgb_images = torch.from_numpy(np.array(f["images"],dtype=np.uint8)).float() # N x C x H x W
-            self.depth_images = torch.from_numpy(np.expand_dims(np.array(f["depths"],dtype=np.uint8),axis=1)).float() #The expand dims is to get N x C x H x W
-            self.mask_images = torch.from_numpy(np.expand_dims(np.array(f["labels"],dtype=np.uint8),axis=1)).float() #The expand dims is to get N x C x H x W
+        self.folder_path = folder_path
         self.transform = transform
+
+        with h5py.File(self.folder_path, 'r') as f:
+            self.total_images = f["images"].shape[0]
+            
         self.class_count()
-        
+
     def __getitem__(self, index):
-            rgb = self.rgb_images[index]
-            depth = self.depth_images[index]
-            mask = self.mask_images[index]
+        with h5py.File(self.folder_path, 'r') as f:
+            rgb = torch.from_numpy(np.array(f["images"][index], dtype=np.uint8)).float()
             
-            if self.transform:
-                rgb, depth, mask = self.transform((rgb, depth, mask))
+            depth_raw = np.array(f["depths"][index], dtype=np.uint8)
+            depth = torch.from_numpy(np.expand_dims(depth_raw, axis=0)).float()
             
-            return rgb, depth, mask
+            mask_raw = np.array(f["labels"][index], dtype=np.uint8)
+            mask = torch.from_numpy(np.expand_dims(mask_raw, axis=0)).float()
+            
+        if self.transform:
+            rgb, depth, mask = self.transform((rgb, depth, mask))
+   
+        return rgb, depth, mask
 
     def __len__(self):
-        return self.rgb_images.shape[0]
-    
+        return self.total_images
+
     def class_count(self):
-        self.classes = torch.unique(self.mask_images).numpy()
+        with h5py.File(self.folder_path, 'r') as f:
+            labels_tensor = torch.from_numpy(np.array(f["labels"], dtype=np.uint8))
+            self.classes = torch.unique(labels_tensor).numpy()
+            
         return self.classes
     
 class SUNRGBDDataset1(Dataset):
