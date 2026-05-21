@@ -711,7 +711,7 @@ class UNet(BaseUNet):
         #Prep for eval
         results = {'img': [], 'mcc': []}
         confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
-        predictions = torch.zeros((valid_it.shape[0]*valid_it.shape[1],valid_it.shape[2],valid_it.shape[3]))
+        predictions = torch.zeros((len(valid_it),valid_it.shape[0],valid_it.shape[1],valid_it.shape[2],valid_it.shape[3])) # (Batch,batch_size,channel,height,width)
         for cls_id in classes:
             results[f'f_{cls_id}'] = []
 
@@ -730,7 +730,7 @@ class UNet(BaseUNet):
                 outputs = self(inputs)
                 
             # process images
-            img_id = batch_idx*target.shape[0]
+            img_id = batch_idx*len(valid_it)
             
             for j,x in enumerate(outputs):
                 predicted = x
@@ -738,6 +738,7 @@ class UNet(BaseUNet):
                 #The squeeze is to remove the channel dimension in preperation
                 target = torch.squeeze(target, dim=0)[j].numpy()
                 predictions[img_id+j] = torch.squeeze(predicted, dim=0)
+                predicted = predicted.argmax(axis=0)
 
 
                 evaluate.evaluate_image(confusion, results, img_id+j, predictions.numpy(),target)
@@ -955,7 +956,7 @@ class MultiViewFusionRGBD(nn.Module):
         #Prep for eval
         results = {'img': [], 'mcc': []}
         confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
-        predictions = torch.zeros((valid_it.shape[0]*valid_it.shape[1],valid_it.shape[2],valid_it.shape[3]))
+        predictions = torch.zeros((len(valid_it),valid_it.shape[0],valid_it.shape[1],valid_it.shape[2],valid_it.shape[3])) # (Batch,batch_size,channel,height,width)
         for cls_id in classes:
             results[f'f_{cls_id}'] = []
 
@@ -970,15 +971,15 @@ class MultiViewFusionRGBD(nn.Module):
                 outputs = self.forward(rgb_inputs,depth_inputs)
                 
             # process images
-            img_id = batch_idx*target.shape[0]
+            img_id = batch_idx*len(valid_it)
             
             for j,x in enumerate(outputs):
                 predicted = x
                 
                 #The squeeze is to remove the channel dimension in preperation
                 target = torch.squeeze(target, dim=0)[j].numpy()
-                predictions[img_id+j] = torch.squeeze(predicted, dim=0)
-
+                predictions[batch_idx,j] = torch.squeeze(predicted, dim=0)
+                predicted = predicted.argmax(axis=0)
 
                 evaluate.evaluate_image(confusion, results, img_id+j, predictions.numpy(),target)
 

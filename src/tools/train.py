@@ -101,7 +101,7 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     print("Dataset loading started")
     util.enable_logging(log_path, 'train.log')
     rng = np.random.default_rng(seed)
-    dataset = dh.RGBD_Segmentation_Dataset(folder_path, transforms.Compose([dh.RandomHorizontalFlip(),dh.RandomVerticalFlip()]))
+    dataset = dh.RGBD_Segmentation_Dataset(folder_path, transforms.Compose([dh.RandomHorizontalFlip(),dh.RandomVerticalFlip(), dh.RandomRotation()]))
     if class_list == None:
         class_list = dataset.class_count()
         print(f"total classes = {class_list}")
@@ -120,24 +120,24 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     
     splits = 10
     split_range = [1 / splits for _ in range(splits)]
-    folds = random_split(dataset, split_range,generator=torch.Generator('cuda').manual_seed(seed))
+    folds = random_split(dataset, split_range,generator=torch.Generator('cpu').manual_seed(seed))
     for fold in range(splits):
         logging.info(f'Fold {fold} training has started')
         print(f'Fold {fold} training has started')
         
         #in channels, how many output classes
         if mode == "RGB":
-            model = unet.UNet(3, class_list, )
+            model = unet.UNet(3, class_list, "RGB")
         elif mode == "D":
-            model = unet.UNet(1, class_list)
+            model = unet.UNet(1, class_list, "D")
         elif mode == "RGBD": 
-            model = unet.UNet(4, class_list)
+            model = unet.UNet(4, class_list, "RGBD")
         elif mode == "TMC":
             model = unet.MultiViewFusionRGBD(class_list)
         print("Model created")
 
-        train_set = folds[fold]
-        valid_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
+        train_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
+        valid_set = folds[fold]
         print("Datasets concatenated")
         
         #  Dataloaders here
