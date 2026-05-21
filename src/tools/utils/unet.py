@@ -790,7 +790,6 @@ class MultiViewFusionRGBD(nn.Module):
         #dirchlet distribution evidence based on TMC
         rgb_evidence   = ReLU()(rgb_prediction)+1
         depth_evidence = ReLU()(depth_prediction)+1
-        evidence = torch.cat([rgb_evidence,depth_evidence],dim=1) # (batch, 2, height, width)
         
         #combination of evidence and final prediction generation
         alpha_a = torch.zeros((batch_len,1,height_len,width_len))
@@ -799,7 +798,8 @@ class MultiViewFusionRGBD(nn.Module):
             for height_idx in range(height_len):
                 for width_idx in range(width_len):
                     #combination of evidence
-                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(evidence[batch,:,height_idx,width_idx])
+                    pixel_evidence = [rgb_evidence[batch,:,height_idx,width_idx], depth_evidence[batch,:,height_idx,width_idx]] # (view=2,classes evidence)
+                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(pixel_evidence)
                     evidence_a  = alpha_a-1
                     final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
         
@@ -820,7 +820,7 @@ class MultiViewFusionRGBD(nn.Module):
         #dirchlet distribution evidence based on TMC
         rgb_evidence   = ReLU()(rgb_prediction)+1
         depth_evidence = ReLU()(depth_prediction)+1
-        evidence = torch.cat([rgb_evidence,depth_evidence],dim=1) # (batch, 2, height, width)
+        evidence = [rgb_evidence, depth_evidence] # [(batch, classes, height, width)]
         
         #combination of evidence and final prediction generation
         alpha_a = torch.zeros((batch_len,1,height_len,width_len))
@@ -831,13 +831,14 @@ class MultiViewFusionRGBD(nn.Module):
                     #loss calculation
                     temp_loss = 0
                     count = 0
-                    for classifier_evidence in evidence[batch,:,height_idx,width_idx]:
+                    pixel_evidence = [rgb_evidence[batch,:,height_idx,width_idx], depth_evidence[batch,:,height_idx,width_idx]] # (view=2,classes evidence)
+                    for classifier_evidence in pixel_evidence:
                         temp_loss += self.ce_loss(gt_mask[batch,0,height_idx,width_idx], classifier_evidence, len(self.classes), global_step, self.lamda_epochs)
                         count += 1
                     loss += temp_loss / count
                     
                     #combination of evidence
-                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(evidence[batch,:,height_idx,width_idx])
+                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(pixel_evidence)
                     evidence_a  = alpha_a-1
                     final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
                     
@@ -1029,6 +1030,13 @@ class MultiViewFusionRGBD(nn.Module):
 
 
     def ce_loss(p, alpha, c, global_step, annealing_step):
+        '''
+        :param p: ground truth
+        :param alpha: evidence
+        :param c: how many classes there are
+        :global_step: which step the epoch is on
+        :annealing_step: how many global steps are required for one annealing step
+        '''
         S = torch.sum(alpha, dim=1, keepdim=True)
         E = alpha - 1
         label = F.one_hot(p, num_classes=c)
