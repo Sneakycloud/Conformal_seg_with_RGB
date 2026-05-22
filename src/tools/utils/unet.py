@@ -11,8 +11,7 @@ from tqdm import tqdm
 from evaluate_uncertainty_maps import evaluate_uncertainty
 from torch.nn import ReLU
 import torch.nn.functional as F
-
-#from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
+from torch.amp import GradScaler
 
 
 class IoU:
@@ -20,42 +19,25 @@ class IoU:
     '''Class-wise intersecion over union metric'''
 
     def __init__(self, classes, regression=False):
-        '''Setup IoU metric
-
-        Parameters
-        ----------
-        classes : List of classes (int)
-        regression : Compute metric for regression problem
-        '''
         self._regression = regression
         self._results = {f: [] for f in classes}
 
     def reset(self):
-        '''Reset internal datastructure
-        '''
         for key in self._results:
             self._results[key] = []
 
     def add(self, predicted, target):
-        '''Add result for predicted and target pair to metric
-
-        Parameters
-        ----------
-        predicted : Tensor of predicted segmentation
-        target : Tensor of targets
-
-        '''
-        # undo log transform (may not be necessary)
         if self._regression:
             predicted = torch.exp(-torch.exp(predicted))
             target = torch.exp(-torch.exp(target))
 
-        predicted = (predicted.argmax(dim=1)
-                     .view(-1))
-        target = (target.argmax(dim=1)
-                  .view(-1))
+        predicted = predicted.argmax(dim=1).view(-1)
 
-        # If target and/or predicted are tensors, convert them to numpy arrays
+        if len(target.shape) == 4:
+            target = target.argmax(dim=1).view(-1)
+        else:
+            target = target.view(-1)
+
         if torch.is_tensor(predicted):
             predicted = predicted.cpu().numpy()
         if torch.is_tensor(target):
@@ -69,54 +51,34 @@ class IoU:
             union = np.logical_or(pred_label, target_label).sum()
 
             if union > 0:
-                self._results[label].append(intersect/union)
+                self._results[label].append(intersect / union)
 
     def value(self):
-        '''Compute class-wise IoU
-        Returns
-        -------
-        Class - IoU map
-
-        '''
         results = {}
-
         for label in self._results:
-            results[label] = np.mean(self._results[label])
+            vals = self._results[label]
 
+            results[label] = float(np.mean(vals)) if len(vals) > 0 else 0.0
         return results
 
 
 class WeightedMSE(nn.Module):
 
-    '''Weighted mean square error loss'''
-
     def __init__(self, weights=None, device='cuda'):
-        '''Setup loss
-
-        Parameters
-        ----------
-        weights : List of class weights, optional
-        device : Select device to run on, optional
-        '''
         nn.Module.__init__(self)
-        if weights != None:
+        if weights is not None:
             self._weights = torch.from_numpy(weights).to(device)
         else:
             self._weights = None
 
     def forward(self, inputs, targets):
-        '''Compute loss for given inputs and targets
+        if len(targets.shape) == 3:
+            num_classes = inputs.shape[1]
+            targets_one_hot = F.one_hot(targets.long(), num_classes=num_classes)
+            targets = targets_one_hot.permute(0, 3, 1, 2).float()
 
-        Parameters
-        ----------
-        inputs : Predicted output
-        targets : Target output
+        targets = targets.to(inputs.device)
 
-        Returns
-        -------
-        Weighted MSE
-
-        '''
         if self._weights is not None:
             mse = ((inputs - targets) ** 2).mean(dim=(0, 2, 3))
             mse = (self._weights * mse).sum()
@@ -128,34 +90,14 @@ class WeightedMSE(nn.Module):
 
 class ModelCheckpoint:
 
-    '''Save best performing model'''
-
     def __init__(self, log_path, model, optimizer,
                  file_name='minloss_checkpoint.pth.tar'):
-        '''Setup checkpoiting
-
-        Parameters
-        ----------
-        log_path : Path to store model file to
-        model : Model reference
-        optimizer : Optimizer reference
-        file_name : Name of the checkpoint
-
-        '''
         self._model_path = os.path.join(log_path, file_name)
         self._model = model
         self._optimizer = optimizer
         self._minloss = np.inf
 
     def update(self, epoch, loss):
-        '''Save model if given loss improved
-
-        Parameters
-        ----------
-        epoch : Current epoch number
-        loss : New loss value
-
-        '''
         if loss < self._minloss:
             self._minloss = loss
             state = {'epoch': epoch, 'state_dict': self._model.state_dict(),
@@ -165,18 +107,7 @@ class ModelCheckpoint:
 
 class CSVLogger:
 
-    '''Write training log'''
-
     def __init__(self, log_path, metric, file_name='log.csv'):
-        '''Setup logging
-
-        Parameters
-        ----------
-        log_path : Path to store CSV log
-        metric : Metric to log
-        file_name : Name of the log file
-
-        '''
         self._file = os.path.join(log_path, file_name)
         self._metric_order = [f for f in metric.value()]
 
@@ -185,23 +116,14 @@ class CSVLogger:
         columns += ['lr', 'val_loss']
         columns += [f'val_iou_{f}' for f in self._metric_order]
 
-        with open(self._file, 'w', encoding='utf-8') as log:
-            log.write(','.join(columns) + '\n')
+        # --- FIX: append mode so fold logs don't overwrite each other ---
+        mode = 'a' if os.path.exists(self._file) else 'w'
+        with open(self._file, mode, encoding='utf-8') as log:
+            if mode == 'w':
+                log.write(','.join(columns) + '\n')
 
     def update(self, epoch, train_loss, train_metric, valid_loss, valid_metric,
                learning_rate):
-        '''Write current progress
-
-        Parameters
-        ----------
-        epoch : Current epoch number
-        train_loss : Training loss
-        train_metric : Training metric results
-        valid_loss : Validation loss
-        valid_metric : Validation metric results
-        learning_rate : Current learning rate
-
-        '''
         entry = [epoch, train_loss]
         entry += [train_metric[f] for f in self._metric_order]
         entry += [learning_rate, valid_loss]
@@ -214,23 +136,10 @@ class CSVLogger:
 
 class BaseUNet(nn.Module):
 
-    '''UNet architecture class'''
-
     LAYER_CONFIG = [32, 64, 128, 256]
 
     @classmethod
     def _pad(cls, inputs):
-        '''Add padding if needed
-
-        Parameters
-        ----------
-        inputs : Input tensor
-
-        Returns
-        -------
-        Padded tensor, applied padding
-
-        '''
         _, _, height, width = inputs.size()
 
         width_correct = 2**math.ceil(math.log2(width)) - width
@@ -246,42 +155,15 @@ class BaseUNet(nn.Module):
 
     @classmethod
     def _unpad(cls, inputs, padding):
-        '''TODO: Docstring for _unpad.
-
-        Parameters
-        ----------
-        inputs : Input tensor
-        padding : Padding information
-
-        Returns
-        -------
-        Tensor without padding
-
-        '''
         top, bottom, left, right = padding
 
-        bottom = -1 if bottom == 0 else -bottom
-        right = -1 if right == 0 else -right
+        bottom_idx = None if bottom == 0 else -bottom
+        right_idx = None if right == 0 else -right
 
-        return inputs[:, :, top:bottom, left:right]
+        return inputs[:, :, top:bottom_idx, left:right_idx]
 
     @classmethod
     def _downsample(cls, inputs, layers, act, pool, steps_per_layer=3):
-        '''Downsample inputs
-
-        Parameters
-        ----------
-        inputs : Input tensor
-        layers : Layer steps
-        act : Activation function to use
-        pool : Pooling function to use
-        steps_per_layer : Computation steps per layer, optional
-
-        Returns
-        -------
-        Output tensor, skip tensors
-
-        '''
         result = inputs
         skips = []
 
@@ -291,10 +173,12 @@ class BaseUNet(nn.Module):
             drop = layers[layer_i*steps_per_layer+1]
             conv2 = layers[layer_i*steps_per_layer+2]
 
+            # --- FIX: removed gradient checkpointing and debug prints ---
             result = drop(result, conv1)
             result = act(result)
             result = conv2(result)
             result = act(result)
+
             skips.append(result)
             result = pool(result)
 
@@ -302,23 +186,11 @@ class BaseUNet(nn.Module):
 
     @classmethod
     def _process(cls, inputs, layers, act):
-        '''Implement lowest level in UNet
-
-        Parameters
-        ----------
-        inputs : Input tensor
-        layers : Layer steps
-        act : Activation function to use
-
-        Returns
-        -------
-        Output tensor
-
-        '''
         conv1 = layers[0]
         drop = layers[1]
         conv2 = layers[2]
 
+        # --- FIX: removed gradient checkpointing and debug prints ---
         result = drop(inputs, conv1)
         result = act(result)
         result = conv2(result)
@@ -328,28 +200,8 @@ class BaseUNet(nn.Module):
 
     @classmethod
     def _upsample(cls, inputs, skips, layers, act, steps_per_layer=4):
-        '''Upsample inputs
-
-        Parameters
-        ----------
-        inputs : Input tensor
-        skips : Skip tensors
-        layers : Layer steps
-        act : Activation function to use
-        steps_per_layer : Computation steps per layer, optional
-
-        Returns
-        -------
-        Output tensor
-
-        '''
-        # auto_LiRPA seems to sometimes run inputs on CPU and sometimes on GPU,
-        # which collides with the skip tensors
         if not inputs.is_cuda:
-            tmp = []
-            for skip in skips:
-                tmp.append(skip.cpu())
-            skips = tmp
+            skips = [s.cpu() for s in skips]
         result = inputs
 
         layer_num = len(layers) // steps_per_layer
@@ -360,8 +212,9 @@ class BaseUNet(nn.Module):
             conv2 = layers[layer_i*steps_per_layer+3]
 
             result = tconv(result)
-            # result = torch.cat((result, skips[-1 * (layer_i+1)]), dim=1)
             result = torch.cat((result, skips.pop()), dim=1)
+
+            # --- FIX: removed gradient checkpointing and debug prints ---
             result = drop(result, conv1)
             result = act(result)
             result = conv2(result)
@@ -372,23 +225,9 @@ class BaseUNet(nn.Module):
 
 class UNet(BaseUNet):
 
-    '''UNet implementation for uncertainty quantification using feature
-    conformal prediction and concrete dropout'''
-
     def __init__(self, in_channels, classes, mode, device='cuda'):
-        '''Setup model
-
-        Parameters
-        ----------
-        in_channels : Number of input channels
-        classes : List of class labels
-        device : Device to run model on [cuda|cpu]
-        mode: RGB, D, or RGBD
-        '''
         BaseUNet.__init__(self)
 
-        # ensure that all tensors are created on the same device
-        # torch.set_default_device(device)
         if device == 'cuda':
             torch.set_default_tensor_type(torch.cuda.FloatTensor)
         self._classes = classes
@@ -400,7 +239,6 @@ class UNet(BaseUNet):
         self._pool = nn.MaxPool2d(2)
         self._mode = mode
 
-        # downsampling
         for filters in self.LAYER_CONFIG:
             self._downsampling.append(nn.Conv2d(in_channels, filters, 3,
                                       padding='same'))
@@ -409,13 +247,11 @@ class UNet(BaseUNet):
             self._downsampling.append(nn.Conv2d(in_channels, filters, 3,
                                       padding='same'))
 
-        # processing
         self._processing.append(nn.Conv2d(in_channels, 512, 3, padding='same'))
         in_channels = 512
         self._processing.append(cd.ConcreteDropout2D())
         self._processing.append(nn.Conv2d(in_channels, 512, 3, padding='same'))
 
-        # upsampling
         for filters in reversed(self.LAYER_CONFIG):
             self._upsampling.append(nn.ConvTranspose2d(in_channels, filters, 2,
                                     stride=2))
@@ -426,178 +262,78 @@ class UNet(BaseUNet):
             self._upsampling.append(nn.Conv2d(in_channels, filters, 3,
                                     padding=1))
 
-        # output
         self._output = nn.Conv2d(in_channels, len(self._classes), 1)
-
-        # initialize conv layers
         self.apply(self._init_weights)
         self.to(device)
 
     def _init_weights(self, layer):
-        '''Initialize weights
-
-        Parameters
-        ----------
-        layer : Layer to initialize
-
-        '''
         if isinstance(layer, nn.Conv2d):
-            nn.init.kaiming_normal(layer.weight)
+            # --- FIX: use non-deprecated kaiming_normal_ ---
+            nn.init.kaiming_normal_(layer.weight)
             nn.init.zeros_(layer.bias)
         elif isinstance(layer, nn.ConvTranspose2d):
             nn.init.zeros_(layer.bias)
 
     def forward(self, inputs):
-        '''Run model on given input
-
-        Parameters
-        ----------
-        inputs : Input tensor
-
-        Returns
-        -------
-        Predicted segmentation
-
-        '''
         result, padding = self._pad(inputs)
-
-        # downsampling
         result, skips = self._downsample(result, self._downsampling,
                                          self._act, self._pool)
-
-        # processing
         result = self._process(result, self._processing, self._act)
-
-        # upsampling
         result = self._upsample(result, skips, self._upsampling, self._act)
-
         result = self._output(result)
-
         return self._unpad(result, padding)
 
     def load(self, model_path):
-        '''Load model weights from given path
-
-        Parameters
-        ----------
-        model_path : Path to the model
-
-        '''
         checkpoint = torch.load(model_path)
         self.load_state_dict(checkpoint['state_dict'])
 
     def fit(self, train_it, valid_it, epochs, log_dir, weights):
-        '''Train model
-
-        Parameters
-        ----------
-        train_it : Training data
-        valid_it : Validation data
-        epochs : Number of epochs to train
-        log_dir : Folder to which logging information is saved
-        weights : List of class weights
-
-        '''
-
         criterion = WeightedMSE(weights)
-        # criterion = torch.nn.CrossEntropyLoss(torch.from_numpy(
-        #                                             np.array(weights))
-        #                                       .to(self._device))
         optimizer = torch.optim.Adam(self.parameters())
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
-        metric = IoU(self._classes, True)
+        metric = IoU(self._classes)
         checkpoint = ModelCheckpoint(log_dir, self, optimizer)
         csv_log = CSVLogger(log_dir, metric)
 
+        scaler = torch.amp.GradScaler('cuda')
+
         for epoch in tqdm(range(epochs)):
-
             train_loss, train_iou = self._train(train_it, criterion,
-                                                optimizer, metric)
+                                                optimizer, metric, scaler)
             scheduler.step(train_loss)
-
             valid_loss, valid_iou = self._validate(valid_it, criterion, metric)
             checkpoint.update(epoch, valid_loss)
             csv_log.update(epoch, train_loss, train_iou, valid_loss, valid_iou,
                            optimizer.param_groups[0]['lr'])
 
     def proba(self, batch):
-        '''Predict class probabilities for given batch
-
-        Parameters
-        ----------
-        batch : Input images
-
-        Returns
-        -------
-        Probability map
-
-        '''
         self.eval()
         if isinstance(batch, dict):
             batch = batch['inputs'].to(self._device,
                                        dtype=batch['inputs'].dtype)
         predicted = self(batch)
-        
-        #predicted = torch.exp(-torch.exp(predicted))
-
         softmax = torch.nn.Softmax2d()
         predicted = softmax(predicted)
-
         return predicted.detach().cpu().numpy()
 
     def predict(self, batch):
-        '''Predict classes for given batch
-
-        Parameters
-        ----------
-        batch : Input images
-
-        Returns
-        -------
-        Class map
-
-        '''
         predicted = self.proba(batch)
-
         return predicted.argmax(axis=1)
 
     def _set_mc_dropout(self, enable):
-        '''Configure model to enable MC Dropout
-
-        Parameters
-        ----------
-        enable : Set to True or False
-
-        '''
         for module in filter(lambda x: isinstance(x, cd.ConcreteDropout2D),
                              self.modules()):
             module.is_mc_dropout = enable
 
     def mc_dropout(self, batch, samples, batch_size):
-        '''Perform Monte Carlo Dropout to infer map of predictive entropy and
-        mutual information
-
-        Parameters
-        ----------
-        batch : Input images
-        samples : Number of Monte Carlo samples
-        batch_size : Maximum batch size to process at once
-
-        Returns
-        -------
-        Predictive entropy map, Mutual information map
-
-        '''
         self._set_mc_dropout(True)
         image = batch['inputs'].to(self._device, dtype=batch['inputs'].dtype)
         assert image.shape[0] == 1, 'Process one image at a time'
 
         batch = image.repeat(batch_size, 1, 1, 1)
-
         repeats = samples // batch_size
         outputs = []
         for _ in range(repeats):
-            # predict
             predicted = self.proba(batch)
             outputs.append(predicted)
 
@@ -605,36 +341,19 @@ class UNet(BaseUNet):
         pred_distr = pred_samples.mean(axis=0)
         sample_size = pred_samples.shape[0]
 
-        # calculate predictive entropy
         eps = np.finfo(pred_distr.dtype).tiny
         log_distr = np.log(pred_distr + eps)
         pred_entropy = -1 * np.sum(pred_distr * log_distr, axis=0)
 
-        # calucalte mutual information
         log_samples = np.log(pred_samples + eps)
         minus_e = np.sum(pred_samples * log_samples, axis=(0, 1))
         minus_e /= sample_size
         mutual_info = pred_entropy + minus_e
 
         self._set_mc_dropout(False)
-
         return pred_entropy, mutual_info
 
-    def _train(self, train_it, criterion, optimizer, metric):
-        '''Train model on epoch
-
-        Parameters
-        ----------
-        train_it : Training data
-        criterion : Training criterion
-        optimizer : Optimizer
-        metric : Metric
-
-        Returns
-        -------
-        Training loss, metric output
-
-        '''
+    def _train(self, train_it, criterion, optimizer, metric, scaler):
         self.train()
         epoch_loss = 0.0
         metric.reset()
@@ -651,18 +370,20 @@ class UNet(BaseUNet):
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = self(inputs)
-                
+
                 reg_terms = [m.regularization
-                            for m in self.modules()
-                            if isinstance(m, cd.ConcreteDropout2D)]
+                             for m in self.modules()
+                             if isinstance(m, cd.ConcreteDropout2D)]
                 reg = torch.stack(reg_terms).sum() if reg_terms else torch.tensor(0.0)
 
                 loss = criterion(outputs, target) + reg
 
-            loss.backward()
-            optimizer.step()
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             epoch_loss += loss.item()
             metric.add(outputs.detach(), target.detach())
@@ -670,24 +391,11 @@ class UNet(BaseUNet):
         return epoch_loss / len(train_it), metric.value()
 
     def _validate(self, valid_it, criterion, metric):
-        '''Validate model
-
-        Parameters
-        ----------
-        valid_it : Validation data
-        criterion : Training criterion
-        metric : Metric
-
-        Returns
-        -------
-        Validation loss, validation metric
-
-        '''
         self.eval()
         epoch_loss = 0.0
         metric.reset()
 
-        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
+        for (rgb, depth, target) in valid_it:
             target = target.to(self._device)
 
             if self._mode == "RGB":
@@ -695,7 +403,7 @@ class UNet(BaseUNet):
             elif self._mode == "D":
                 inputs = depth.to(self._device)
             elif self._mode == "RGBD":
-                inputs = torch.cat([rgb,depth],dim=1).to(self._device)
+                inputs = torch.cat([rgb, depth], dim=1).to(self._device)
 
             with torch.no_grad():
                 outputs = self(inputs)
@@ -704,7 +412,7 @@ class UNet(BaseUNet):
             epoch_loss += loss.item()
             metric.add(outputs.detach(), target.detach())
 
-        return epoch_loss/len(valid_it), metric.value()
+        return epoch_loss / len(valid_it), metric.value()
 
     def final_evaluation(self, valid_it, classes, log_path):
         self.eval()
@@ -728,361 +436,308 @@ class UNet(BaseUNet):
 
             with torch.no_grad():
                 outputs = self(inputs)
-                
+
             img_id = batch_idx * inputs.shape[0]
-            
+
             for j, x in enumerate(outputs):
-
-                pred_np = x.squeeze(0).cpu().numpy()
+                pred_np = x.cpu().numpy()
                 collected_predictions.append(pred_np)
-                
-                target_np = torch.squeeze(target, dim=0)[j].cpu().numpy()
-
-                evaluate.evaluate_image(confusion, results, img_id + j, np.expand_dims(pred_np, axis=0), target_np)
+                target_np = target[j].squeeze(0).cpu().numpy()
+                pred_argmax = pred_np.argmax(axis=0)
+                evaluate.evaluate_image(confusion, results, img_id + j,
+                                        pred_argmax, target_np)
 
         results['img'].append('all')
         f1_class_list = []
         for cls_id in confusion:
             f1_measure = evaluate.calculate_f_measure(
-                                                    confusion[cls_id]['tp'],
-                                                    confusion[cls_id]['fp'],
-                                                    confusion[cls_id]['fn'])
+                confusion[cls_id]['tp'],
+                confusion[cls_id]['fp'],
+                confusion[cls_id]['fn'])
             results[f'f_{cls_id}'].append(f1_measure)
             f1_class_list.append((cls_id, f1_measure))
         mcc = evaluate.calculate_mcc(confusion)
         results['mcc'].append(mcc)
-        
+
         predictions_final = torch.from_numpy(np.stack(collected_predictions))
-        
-        auces, auses = evaluate_uncertainty(valid_it, predictions_final, classes, log_path)
-        
+        auces, auses = evaluate_uncertainty(predictions_final, valid_it,
+                                            classes, log_path)
+
         return f1_class_list, mcc, auces, auses
 
 
 class MultiViewFusionRGBD(nn.Module):
-    def __init__(self,classes, lamda_epochs = 1, device = "cuda"):
-        MultiViewFusionRGBD.__init__(self)
-        
-        #rgb, d u-nets
-        self.rgb_unet = UNet(3,classes,"rgb",device)
-        self.depth_unet = UNet(1,classes,"d",device)
-    
-        self.classes = classes
+
+    def __init__(self, classes, lamda_epochs=1, device='cuda'):
+        # --- FIX: was calling MultiViewFusionRGBD.__init__ recursively ---
+        super(MultiViewFusionRGBD, self).__init__()
+
+        self.rgb_unet   = UNet(3, classes, "RGB", device)
+        self.depth_unet = UNet(1, classes, "D",   device)
+
+        self.classes      = len(classes)
+        self.class_list   = classes
         self.lamda_epochs = lamda_epochs
-    
-    #https://github.com/Han-Zongbo/TMC/blob/main/TMC%20ICLR/model.py
+        self._device      = device
+
     def forward(self, rgb_images, depth_images):
-        batch_len = rgb_images.shape[0]
-        height_len = rgb_images.shape[2]
-        width_len = rgb_images.shape[3]
-        
-        #normal predictions
-        rgb_prediction   = self.rgb_unet(rgb_images) #(batch, channel, height, width)
+        rgb_prediction   = self.rgb_unet(rgb_images)
         depth_prediction = self.depth_unet(depth_images)
-        
-        #dirchlet distribution evidence based on TMC
-        rgb_evidence   = ReLU()(rgb_prediction)+1
-        depth_evidence = ReLU()(depth_prediction)+1
-        evidence = torch.cat([rgb_evidence,depth_evidence],dim=1) # (batch, 2, height, width)
-        
-        #combination of evidence and final prediction generation
-        alpha_a = torch.zeros((batch_len,1,height_len,width_len))
-        final_prediction = torch.zeros((batch_len,len(self.classes),height_len,width_len)) # (batch, classes, height, width)
-        for batch in range(batch_len):
-            for height_idx in range(height_len):
-                for width_idx in range(width_len):
-                    #combination of evidence
-                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(evidence[batch,:,height_idx,width_idx])
-                    evidence_a  = alpha_a-1
-                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
-        
-        
-        return final_prediction
-        
-        
+
+        # evidence = softplus output + 1 (always >= 1)
+        rgb_evidence   = F.softplus(rgb_prediction)   + 1
+        depth_evidence = F.softplus(depth_prediction) + 1
+
+        # --- FIX: vectorised DS combination, no pixel loops ---
+        alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence)
+        return alpha_combined
+
+    def _DS_Combin_vectorised(self, alpha1, alpha2):
+        '''Vectorised Dempster-Shafer combination of two alpha tensors.
+
+        Parameters
+        ----------
+        alpha1, alpha2 : (B, C, H, W) tensors of Dirichlet parameters
+
+        Returns
+        -------
+        alpha_a : (B, C, H, W) combined Dirichlet parameters
+        '''
+        K = alpha1.shape[1]   # number of classes
+
+        S1 = alpha1.sum(dim=1, keepdim=True)   # (B,1,H,W)
+        S2 = alpha2.sum(dim=1, keepdim=True)
+
+        b1 = (alpha1 - 1) / S1   # belief masses  (B,C,H,W)
+        b2 = (alpha2 - 1) / S2
+
+        u1 = K / S1              # uncertainty masses  (B,1,H,W)
+        u2 = K / S2
+
+        # conflict C = sum_{i!=j} b1_i * b2_j
+        # = (sum_i b1_i)(sum_j b2_j) - sum_i b1_i*b2_i
+        b1_sum = b1.sum(dim=1, keepdim=True)  # (B,1,H,W)
+        b2_sum = b2.sum(dim=1, keepdim=True)
+        C = b1_sum * b2_sum - (b1 * b2).sum(dim=1, keepdim=True)  # (B,1,H,W)
+
+        denom = 1.0 - C  # (B,1,H,W)
+        denom = denom.clamp(min=1e-8)   # numerical safety
+
+        # combined belief and uncertainty
+        b_a = (b1 * b2 + b1 * u2 + b2 * u1) / denom   # (B,C,H,W)
+        u_a = (u1 * u2) / denom                        # (B,1,H,W)
+
+        # recover alpha from b_a and u_a
+        S_a   = K / u_a.clamp(min=1e-8)
+        e_a   = b_a * S_a
+        alpha_a = e_a + 1
+
+        return alpha_a   # (B,C,H,W)
+
     def loss_forward(self, rgb_images, depth_images, gt_mask, global_step):
-        loss = 0
-        batch_len = rgb_images.shape[0]
-        height_len = rgb_images.shape[2]
-        width_len = rgb_images.shape[3]
-        
-        #normal predictions
-        rgb_prediction   = self.rgb_unet(rgb_images) #(batch, channel, height, width)
+        '''Compute TMC evidence loss for both views plus combined output'''
+
+        rgb_prediction   = self.rgb_unet(rgb_images)
         depth_prediction = self.depth_unet(depth_images)
-        
-        #dirchlet distribution evidence based on TMC
-        rgb_evidence   = ReLU()(rgb_prediction)+1
-        depth_evidence = ReLU()(depth_prediction)+1
-        evidence = torch.cat([rgb_evidence,depth_evidence],dim=1) # (batch, 2, height, width)
-        
-        #combination of evidence and final prediction generation
-        alpha_a = torch.zeros((batch_len,1,height_len,width_len))
-        final_prediction = torch.zeros((batch_len,len(self.classes),height_len,width_len)) # (batch, classes, height, width)
-        for batch in range(batch_len):
-            for height_idx in range(height_len):
-                for width_idx in range(width_len):
-                    #loss calculation
-                    temp_loss = 0
-                    count = 0
-                    for classifier_evidence in evidence[batch,:,height_idx,width_idx]:
-                        temp_loss += self.ce_loss(gt_mask[batch,0,height_idx,width_idx], classifier_evidence, len(self.classes), global_step, self.lamda_epochs)
-                        count += 1
-                    loss += temp_loss / count
-                    
-                    #combination of evidence
-                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(evidence[batch,:,height_idx,width_idx])
-                    evidence_a  = alpha_a-1
-                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
-                    
-                    loss += self.ce_loss(gt_mask[batch,0,height_idx,width_idx], alpha_a, len(self.classes), global_step, self.lamda_epochs )
-        
-        loss = loss / (batch_len*height_len*width_len)
-        
-        return final_prediction, loss
-    
-    def _train(self, train_it, optimizer, epoch):
-        '''Train model on epoch
+
+        rgb_evidence   = F.softplus(rgb_prediction)   + 1
+        depth_evidence = F.softplus(depth_prediction) + 1
+
+        # per-view loss
+        loss_rgb   = self._edl_loss(rgb_evidence,   gt_mask, global_step)
+        loss_depth = self._edl_loss(depth_evidence, gt_mask, global_step)
+
+        # combined loss
+        alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence)
+        loss_combined  = self._edl_loss(alpha_combined, gt_mask, global_step)
+
+        return alpha_combined, (loss_rgb + loss_depth + loss_combined) / 3.0
+
+    def _edl_loss(self, alpha, gt_mask, global_step):
+        '''Vectorised EDL loss over all pixels.
 
         Parameters
         ----------
-        train_it : Training data
-        criterion : Training criterion
-        optimizer : Optimizer
-        metric : Metric
-
-        Returns
-        -------
-        Training loss, metric output
-
+        alpha   : (B, C, H, W) Dirichlet parameters
+        gt_mask : (B, H, W) or (B, 1, H, W) integer class labels
         '''
-        self.train()
-        epoch_loss = 0.0
+        if gt_mask.dim() == 4:
+            gt_mask = gt_mask.squeeze(1)   # (B, H, W)
 
-        for batch_idx,(rgb, depth, target) in enumerate(train_it):
-            target = target.to(self._device)
+        B, C, H, W = alpha.shape
 
-            rgb_inputs = rgb.to(self._device)
-            depth_inputs = depth.to(self._device)
+        # flatten spatial dims for batched ops
+        alpha_flat = alpha.permute(0, 2, 3, 1).reshape(-1, C)  # (B*H*W, C)
+        labels_flat = gt_mask.reshape(-1).long()                # (B*H*W,)
 
-            _, loss = self.loss_forward(rgb_inputs, depth_inputs, target, epoch)
+        S = alpha_flat.sum(dim=1, keepdim=True)                 # (B*H*W, 1)
+        one_hot = F.one_hot(labels_flat, num_classes=C).float() # (B*H*W, C)
 
-            # add dropout regularization
-            reg = torch.zeros(1)  # get the regularization term
-            for module in filter(lambda x: isinstance(x, cd.ConcreteDropout2D),
-                                 self.modules()):
-                reg += module.regularization
-            loss += reg
+        # classification term
+        A = (one_hot * (torch.digamma(S) - torch.digamma(alpha_flat))).sum(dim=1)
 
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
+        # KL regularisation with annealing
+        annealing_coef = min(1.0, global_step / max(int(self.lamda_epochs), 1))
+        alpha_tilde = one_hot + (1 - one_hot) * alpha_flat
+        loss_kl = self._KL_flat(alpha_tilde, C)
 
-            epoch_loss += loss.item()
+        return (A + annealing_coef * loss_kl.squeeze(1)).mean()
 
-        return epoch_loss/len(train_it)
-        
-    def _validate(self, valid_it, epoch):
-        '''Validate model
+    def _KL_flat(self, alpha, C):
+        '''KL divergence between Dir(alpha) and Dir(1,...,1).  (N, C) -> (N, 1)'''
+        beta  = torch.ones_like(alpha)
+        S_a   = alpha.sum(dim=1, keepdim=True)
+        S_b   = torch.tensor(float(C), device=alpha.device)
 
-        Parameters
-        ----------
-        valid_it : Validation data
-        criterion : Training criterion
-        metric : Metric
+        lnB      = torch.lgamma(S_a) - torch.lgamma(alpha).sum(dim=1, keepdim=True)
+        lnB_uni  = torch.lgamma(beta).sum(dim=1, keepdim=True) - torch.lgamma(S_b)
+        dg_diff  = torch.digamma(alpha) - torch.digamma(S_a)
 
-        Returns
-        -------
-        Validation loss, validation metric
+        kl = ((alpha - beta) * dg_diff).sum(dim=1, keepdim=True) + lnB + lnB_uni
+        return kl
 
-        '''
-        self.eval()
-        epoch_loss = 0.0
-
-        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
-            target = target.to(self._device)
-
-            rgb_inputs = rgb.to(self._device)
-            depth_inputs = depth.to(self._device)
-
-            with torch.no_grad():
-                _, loss = self.loss_forward(rgb_inputs, depth_inputs, target, epoch)
-
-            epoch_loss += loss.item()
-
-        return epoch_loss/len(valid_it)
-        
-    def fit(self, train_it, valid_it, epochs, log_dir):
-        '''Train model
-
-        Parameters
-        ----------
-        train_it : Training data
-        valid_it : Validation data
-        epochs : Number of epochs to train
-        log_dir : Folder to which logging information is saved
-        '''
-        
+    def fit(self, train_it, valid_it, epochs, log_dir, weights=None):
         optimizer = torch.optim.Adam(self.parameters())
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
-        checkpoint = ModelCheckpoint(log_dir, self, optimizer)
+        checkpoint = ModelCheckpoint(log_dir, self, optimizer,
+                                     file_name='minloss_checkpoint_TMC.pth.tar')
 
-        epoch_columns = []
-        training_losses = []
+        training_losses   = []
         validation_losses = []
 
+        scaler = torch.amp.GradScaler('cuda')
+
         for epoch in tqdm(range(epochs)):
-            epoch_columns.append(f"Epoch {epoch}")
-            
-            train_loss = self._train(train_it, optimizer, epoch)
+            train_loss = self._train(train_it, optimizer, epoch, scaler)
             training_losses.append(train_loss)
             scheduler.step(train_loss)
 
             valid_loss = self._validate(valid_it, epoch)
             validation_losses.append(valid_loss)
             checkpoint.update(epoch, valid_loss)
-        
-        pd.DataFrame([epoch_columns,training_losses,validation_losses]).to_csv(os.path.join(log_dir, "Training_and_validation_TMC"), index=False)
-        
-    def final_evaluation(self, valid_it, classes, log_path):
+            print(f'  [TMC] epoch {epoch}  train={train_loss:.4f}  val={valid_loss:.4f}',
+                  flush=True)
+
+        pd.DataFrame({
+            'epoch': list(range(epochs)),
+            'train_loss': training_losses,
+            'val_loss': validation_losses
+        }).to_csv(os.path.join(log_dir, 'Training_and_validation_TMC.csv'), index=False)
+
+    def _train(self, train_it, optimizer, epoch, scaler):
+        self.train()
+        epoch_loss = 0.0
+
+        for (rgb, depth, target) in train_it:
+            target      = target.to(self._device)
+            rgb_inputs  = rgb.to(self._device)
+            depth_inputs = depth.to(self._device)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            with torch.amp.autocast('cuda'):
+                _, loss = self.loss_forward(rgb_inputs, depth_inputs,
+                                            target, epoch)
+
+                # concrete dropout regularisation from both sub-networks
+                reg_terms = [m.regularization
+                             for m in self.modules()
+                             if isinstance(m, cd.ConcreteDropout2D)]
+                reg = torch.stack(reg_terms).sum() if reg_terms else torch.tensor(0.0)
+                loss = loss + reg
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            epoch_loss += loss.item()
+
+        return epoch_loss / len(train_it)
+
+    def _validate(self, valid_it, epoch):
         self.eval()
+        epoch_loss = 0.0
 
-        #Prep for eval
-        results = {'img': [], 'mcc': []}
-        confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
-        predictions = torch.zeros((valid_it.shape[0]*valid_it.shape[1],valid_it.shape[2],valid_it.shape[3]))
-        for cls_id in classes:
-            results[f'f_{cls_id}'] = []
-
-
-        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
-            target = target.to(self._device)
-
-            rgb_inputs = rgb.to(self._device)
+        for (rgb, depth, target) in valid_it:
+            target       = target.to(self._device)
+            rgb_inputs   = rgb.to(self._device)
             depth_inputs = depth.to(self._device)
 
             with torch.no_grad():
-                outputs = self.forward(rgb_inputs,depth_inputs)
-                
-            # process images
-            img_id = batch_idx*target.shape[0]
-            
-            for j,x in enumerate(outputs):
-                predicted = x
-                
-                #The squeeze is to remove the channel dimension in preperation
-                target = torch.squeeze(target, dim=0)[j].numpy()
-                predictions[img_id+j] = torch.squeeze(predicted, dim=0)
+                _, loss = self.loss_forward(rgb_inputs, depth_inputs,
+                                            target, epoch)
 
+            epoch_loss += loss.item()
 
-                evaluate.evaluate_image(confusion, results, img_id+j, predictions.numpy(),target)
+        return epoch_loss / len(valid_it)
 
-        # add summary statistics for eval
+    def final_evaluation(self, valid_it, classes, log_path):
+        self.eval()
+
+        results = {'img': [], 'mcc': []}
+        confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
+        for cls_id in classes:
+            results[f'f_{cls_id}'] = []
+
+        collected_predictions = []
+
+        for batch_idx, (rgb, depth, target) in enumerate(valid_it):
+            target       = target.to(self._device)
+            rgb_inputs   = rgb.to(self._device)
+            depth_inputs = depth.to(self._device)
+
+            with torch.no_grad():
+                outputs = self.forward(rgb_inputs, depth_inputs)
+
+            img_id = batch_idx * rgb.shape[0]
+
+            for j, x in enumerate(outputs):
+                pred_np   = x.cpu().numpy()
+                collected_predictions.append(pred_np)
+                target_np = target[j].squeeze(0).cpu().numpy()
+                pred_argmax = pred_np.argmax(axis=0)
+                evaluate.evaluate_image(confusion, results, img_id + j,
+                                        pred_argmax, target_np)
+
         results['img'].append('all')
         f1_class_list = []
         for cls_id in confusion:
             f1_measure = evaluate.calculate_f_measure(
-                                                    confusion[cls_id]['tp'],
-                                                    confusion[cls_id]['fp'],
-                                                    confusion[cls_id]['fn'])
+                confusion[cls_id]['tp'],
+                confusion[cls_id]['fp'],
+                confusion[cls_id]['fn'])
             results[f'f_{cls_id}'].append(f1_measure)
-            f1_class_list.append((cls_id,f1_measure))
+            f1_class_list.append((cls_id, f1_measure))
         mcc = evaluate.calculate_mcc(confusion)
         results['mcc'].append(mcc)
-        
-        
-        #results for uncertainity
-        auces, auses = evaluate_uncertainty(valid_it, predictions, classes, log_path)
-        
-        
-        #final return
+
+        predictions_final = torch.from_numpy(np.stack(collected_predictions))
+        auces, auses = evaluate_uncertainty(predictions_final, valid_it,
+                                            classes, log_path)
+
         return f1_class_list, mcc, auces, auses
-    
+
     def load(self, model_path):
-        '''Load model weights from given path
+        ckpt = torch.load(model_path)
+        self.load_state_dict(ckpt['state_dict'])
 
-        Parameters
-        ----------
-        model_path : Path to the model
-
-        '''
-        checkpoint = torch.load(model_path)
-        self.load_state_dict(checkpoint['state_dict'])
-
-    # loss function
     def KL(self, alpha, c):
-        beta = torch.ones((1, c)).cuda()
+        beta    = torch.ones((1, c)).to(alpha.device)
         S_alpha = torch.sum(alpha, dim=1, keepdim=True)
-        S_beta = torch.sum(beta, dim=1, keepdim=True)
-        lnB = torch.lgamma(S_alpha) - torch.sum(torch.lgamma(alpha), dim=1, keepdim=True)
+        S_beta  = torch.sum(beta,  dim=1, keepdim=True)
+        lnB     = torch.lgamma(S_alpha) - torch.sum(torch.lgamma(alpha), dim=1, keepdim=True)
         lnB_uni = torch.sum(torch.lgamma(beta), dim=1, keepdim=True) - torch.lgamma(S_beta)
-        dg0 = torch.digamma(S_alpha)
-        dg1 = torch.digamma(alpha)
-        kl = torch.sum((alpha - beta) * (dg1 - dg0), dim=1, keepdim=True) + lnB + lnB_uni
+        dg0     = torch.digamma(S_alpha)
+        dg1     = torch.digamma(alpha)
+        kl      = torch.sum((alpha - beta) * (dg1 - dg0), dim=1, keepdim=True) + lnB + lnB_uni
         return kl
 
-
     def ce_loss(self, p, alpha, c, global_step, annealing_step):
-        S = torch.sum(alpha, dim=1, keepdim=True)
-        E = alpha - 1
+        S     = torch.sum(alpha, dim=1, keepdim=True)
+        E     = alpha - 1
         label = F.one_hot(p, num_classes=c)
-        A = torch.sum(label * (torch.digamma(S) - torch.digamma(alpha)), dim=1, keepdim=True)
-
+        A     = torch.sum(label * (torch.digamma(S) - torch.digamma(alpha)),
+                          dim=1, keepdim=True)
         annealing_coef = min(1, global_step / annealing_step)
-
-        alp = E * (1 - label) + 1
-        B = annealing_coef * self.KL(alp, c)
-
-        return (A + B)
-
-    def DS_Combin(self, alpha):
-        """
-        :param alpha: All Dirichlet distribution parameters.
-        :return: Combined Dirichlet distribution parameters.
-        """
-        def DS_Combin_two(alpha1, alpha2):
-            """
-            :param alpha1: Dirichlet distribution parameters of view 1
-            :param alpha2: Dirichlet distribution parameters of view 2
-            :return: Combined Dirichlet distribution parameters
-            """
-            alpha = dict()
-            alpha[0], alpha[1] = alpha1, alpha2
-            b, S, E, u = dict(), dict(), dict(), dict()
-            for v in range(2):
-                S[v] = torch.sum(alpha[v], dim=1, keepdim=True)
-                E[v] = alpha[v]-1
-                b[v] = E[v]/(S[v].expand(E[v].shape))
-                u[v] = self.classes/S[v]
-
-            # b^0 @ b^(0+1)
-            bb = torch.bmm(b[0].view(-1, self.classes, 1), b[1].view(-1, 1, self.classes))
-            # b^0 * u^1
-            uv1_expand = u[1].expand(b[0].shape)
-            bu = torch.mul(b[0], uv1_expand)
-            # b^1 * u^0
-            uv_expand = u[0].expand(b[0].shape)
-            ub = torch.mul(b[1], uv_expand)
-            # calculate C
-            bb_sum = torch.sum(bb, dim=(1, 2), out=None)
-            bb_diag = torch.diagonal(bb, dim1=-2, dim2=-1).sum(-1)
-            # bb_diag1 = torch.diag(torch.mm(b[v], torch.transpose(b[v+1], 0, 1)))
-            C = bb_sum - bb_diag
-
-            # calculate b^a
-            b_a = (torch.mul(b[0], b[1]) + bu + ub)/((1-C).view(-1, 1).expand(b[0].shape))
-            # calculate u^a
-            u_a = torch.mul(u[0], u[1])/((1-C).view(-1, 1).expand(u[0].shape))
-
-            # calculate new S
-            S_a = self.classes / u_a
-            # calculate new e_k
-            e_a = torch.mul(b_a, S_a.expand(b_a.shape))
-            alpha_a = e_a + 1
-            return alpha_a
-
-        for v in range(len(alpha)-1):
-            if v==0:
-                alpha_a = DS_Combin_two(alpha[0], alpha[1])
-            else:
-                alpha_a = DS_Combin_two(alpha_a, alpha[v+1])
-        return alpha_a
+        alp   = E * (1 - label) + 1
+        B     = annealing_coef * self.KL(alp, c)
+        return A + B

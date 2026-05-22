@@ -1,6 +1,7 @@
 import logging
 import os
 import numpy as np
+import torch
 
 
 def select_from_index(data, index):
@@ -17,8 +18,11 @@ def select_from_index(data, index):
     Selected values [K_n, ..., K_1]
 
     '''
+    if isinstance(index, torch.Tensor):
+        index = index.detach().cpu().numpy()
+
     shape = index.shape
-    idx = index.flatten().astype(np.uint8)
+    idx = index.flatten().astype(np.uint64)
     entries = len(idx)
     cls_num = data.shape[0]
 

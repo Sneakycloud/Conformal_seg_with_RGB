@@ -53,10 +53,13 @@ def calculate_mcc(confusion):
         if i == 0:
             s = (confusion[cls_id]['tp'] + confusion[cls_id]['fp']
                  + confusion[cls_id]['tn'] + confusion[cls_id]['fn'])
-
+    
     numerator = c*s - np.dot(t, p)
     denominator = (np.sqrt(s**2 - np.dot(p, p))
                    * np.sqrt(s**2 - np.dot(t, t)))
+    
+    if denominator == 0:
+        return 0.0
 
     return numerator / denominator
 

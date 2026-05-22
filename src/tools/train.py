@@ -100,12 +100,34 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
 
     print("Dataset loading started")
     util.enable_logging(log_path, 'train.log')
-    rng = np.random.default_rng(seed)
-    dataset = dh.RGBD_Segmentation_Dataset(folder_path, transforms.Compose([dh.RandomHorizontalFlip(),dh.RandomVerticalFlip()]))
+
+    rng = np.random.default_rng(42)
+
+    gen = torch.Generator().manual_seed(seed)
+
+    dataset = dh.SUNRGBDDataset2(
+    root=folder_path,
+    num_classes=13,
+    transform=transforms.Compose([
+        dh.RandomCrop((256, 256)),
+        dh.RandomVerticalFlip(p=0.5),
+        dh.RandomHorizontalFlip(p=0.5),
+        dh.RandomRotation(p=0.5)
+    ]),
+    img_size=(240, 320)
+    )
+
     if class_list == None:
         class_list = dataset.class_count()
         print(f"total classes = {class_list}")
     print("Dataset loading completed")
+    
+    MAX_SAMPLES = 2000
+    if len(dataset) > MAX_SAMPLES:
+        indices = torch.randperm(len(dataset), 
+                                generator=torch.Generator().manual_seed(seed))[:MAX_SAMPLES]
+        dataset = torch.utils.data.Subset(dataset, indices)
+        print(f'Subsampled dataset to {MAX_SAMPLES} images', flush=True)
     
     #To prepare for cross validation: https://discuss.pytorch.org/t/using-k-fold-cross-validation-to-train-my-model/196288
     
@@ -118,8 +140,16 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     results = []
     
     splits = 10
-    split_range = [1 / splits for _ in range(splits)]
-    folds = random_split(dataset, split_range)
+
+    total_len = len(dataset)
+    fold_sizes = [total_len // splits] * splits
+
+    remainder = total_len % splits
+    for r in range(remainder):
+        fold_sizes[r] += 1
+
+    folds = random_split(dataset, fold_sizes, generator=gen)
+
     for fold in range(splits):
         logging.info(f'Fold {fold} training has started')
         print(f'Fold {fold} training has started')
@@ -132,7 +162,7 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         elif mode == "RGBD": 
             model = unet.UNet(4, class_list, mode)
         elif mode == "TMC":
-            model = unet.MultiViewFusionRGBD(class_list, mode)
+            model = unet.MultiViewFusionRGBD(classes=class_list, lamda_epochs=epochs)
         print("Model created")
 
         train_set = ConcatDataset([x for i,x in enumerate(folds) if i != fold])
@@ -193,5 +223,3 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     pd.DataFrame(mean_std_results).to_csv(os.path.join(log_path, f"Final_eval_results_mean_std_{mode}"), index=False)
     
     logging.info('End training')
-    
-    
