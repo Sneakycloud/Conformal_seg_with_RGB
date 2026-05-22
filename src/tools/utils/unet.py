@@ -792,16 +792,16 @@ class MultiViewFusionRGBD(nn.Module):
         depth_evidence = ReLU()(depth_prediction)+1
         
         #combination of evidence and final prediction generation
-        alpha_a = torch.zeros((batch_len,1,height_len,width_len))
+        alpha_a = torch.zeros((batch_len,len(self.classes),height_len,width_len))
         final_prediction = torch.zeros((batch_len,len(self.classes),height_len,width_len)) # (batch, classes, height, width)
         for batch in range(batch_len):
             for height_idx in range(height_len):
                 for width_idx in range(width_len):
                     #combination of evidence
                     pixel_evidence = [rgb_evidence[batch,:,height_idx,width_idx], depth_evidence[batch,:,height_idx,width_idx]] # (view=2,classes evidence)
-                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(pixel_evidence)
-                    evidence_a  = alpha_a-1
-                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
+                    current_alpha = self.DS_Combin(pixel_evidence) # (classes_len)
+                    alpha_a[batch,:,height_idx,width_idx] = current_alpha
+                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(current_alpha).sample()
         
         
         return final_prediction
@@ -823,7 +823,7 @@ class MultiViewFusionRGBD(nn.Module):
         evidence = [rgb_evidence, depth_evidence] # [(batch, classes, height, width)]
         
         #combination of evidence and final prediction generation
-        alpha_a = torch.zeros((batch_len,1,height_len,width_len))
+        alpha_a = torch.zeros((batch_len,len(self.classes),height_len,width_len))
         final_prediction = torch.zeros((batch_len,len(self.classes),height_len,width_len)) # (batch, classes, height, width)
         for batch in range(batch_len):
             for height_idx in range(height_len):
@@ -838,9 +838,9 @@ class MultiViewFusionRGBD(nn.Module):
                     loss += temp_loss / count
                     
                     #combination of evidence
-                    alpha_a[batch,0,height_idx,width_idx] = self.DS_Combin(pixel_evidence)
-                    evidence_a  = alpha_a-1
-                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(evidence_a).sample()
+                    current_alpha = self.DS_Combin(pixel_evidence) # (classes_len)
+                    alpha_a[batch,:,height_idx,width_idx] = current_alpha # (batch, classes, height, width)
+                    final_prediction[batch,:,height_idx,width_idx] = torch.distributions.dirichlet.Dirichlet(current_alpha).sample()
                     
                     loss += self.ce_loss(gt_mask[batch,0,height_idx,width_idx], alpha_a, len(self.classes), global_step, self.lamda_epochs )
         
