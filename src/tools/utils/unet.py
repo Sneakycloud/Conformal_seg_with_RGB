@@ -489,8 +489,14 @@ class MultiViewFusionRGBD(nn.Module):
         depth_evidence = F.softplus(depth_prediction) + 1
 
         # --- FIX: vectorised DS combination, no pixel loops ---
-        alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence)
-        return alpha_combined
+        alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence) # (B,C,H,W)
+        alpha_combined = torch.transpose(alpha_combined, (0,2,3,1)) # (B,H,W,C)
+        alpha_batched = torch.reshape(alpha_combined, (alpha_combined.shape[0]*alpha_combined.shape[1]*alpha_combined.shape[2],alpha_combined.shape[3])) # (B*H*W,C)
+        uncertainity_maps = torch.distributions.dirichlet.Dirichlet(alpha_batched) # (B*H*W,C)
+        uncertainity_maps = torch.reshape(uncertainity_maps, (alpha_combined.shape[0],alpha_combined.shape[1],alpha_combined.shape[2],alpha_combined.shape[3])) # (B,H,W,C)
+        uncertainity_maps = torch.transpose(uncertainity_maps, (0,3,1,2)) # (B,C,H,W)
+        
+        return uncertainity_maps
 
     def _DS_Combin_vectorised(self, alpha1, alpha2):
         '''Vectorised Dempster-Shafer combination of two alpha tensors.
