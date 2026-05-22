@@ -584,7 +584,7 @@ class MultiViewFusionRGBD(nn.Module):
 
         # KL regularisation with annealing
         annealing_coef = min(1.0, global_step / max(int(self.lamda_epochs), 1))
-        alpha_tilde = one_hot + (1 - one_hot) * alpha_flat
+        alpha_tilde = (alpha_flat-1) * (1-one_hot) + 1
         loss_kl = self._KL_flat(alpha_tilde, C)
 
         return (A + annealing_coef * loss_kl.squeeze(1)).mean()
