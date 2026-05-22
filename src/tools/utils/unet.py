@@ -490,11 +490,11 @@ class MultiViewFusionRGBD(nn.Module):
 
         # --- FIX: vectorised DS combination, no pixel loops ---
         alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence) # (B,C,H,W)
-        alpha_combined = torch.transpose(alpha_combined, (0,2,3,1)) # (B,H,W,C)
+        alpha_combined = torch.permute(alpha_combined, (0,2,3,1)) # (B,H,W,C)
         alpha_batched = torch.reshape(alpha_combined, (alpha_combined.shape[0]*alpha_combined.shape[1]*alpha_combined.shape[2],alpha_combined.shape[3])) # (B*H*W,C)
-        uncertainity_maps = torch.distributions.dirichlet.Dirichlet(alpha_batched) # (B*H*W,C)
+        uncertainity_maps = torch.distributions.dirichlet.Dirichlet(alpha_batched).sample() # (B*H*W,C)
         uncertainity_maps = torch.reshape(uncertainity_maps, (alpha_combined.shape[0],alpha_combined.shape[1],alpha_combined.shape[2],alpha_combined.shape[3])) # (B,H,W,C)
-        uncertainity_maps = torch.transpose(uncertainity_maps, (0,3,1,2)) # (B,C,H,W)
+        uncertainity_maps = torch.permute(uncertainity_maps, (0,3,1,2)) # (B,C,H,W)
         
         return uncertainity_maps
 
