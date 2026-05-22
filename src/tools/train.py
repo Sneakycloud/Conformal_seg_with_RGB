@@ -203,16 +203,16 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     pd.DataFrame(results).to_csv(os.path.join(log_path, f"Final_eval_results_{mode}"), index=False)
     
     
-    classes_id = [fold[1][0] for fold in results]
-    mean_f1 = np.mean(np.array([[class_tuple[1] for class_tuple in fold[1]] for fold in results]), axis=1) # (classes,mean_f1)
+    classes_id = [f1[0] for f1 in results[0][1]]
+    mean_f1 = np.mean(np.array([[f1_tuple[1] for f1_tuple in fold[1]] for fold in results]), axis=0) # (classes)
     mean_mcc = np.mean(np.array([fold[2] for fold in results]), axis=0) # (mean_mcc)
-    mean_auces = np.mean(np.array([fold[3][0] for fold in results]), axis=1) # (classes,mean_auces_scores)
-    mean_auses = np.mean(np.array([fold[4][0] for fold in results]), axis=1) # (classes,mean_auses_scores)
+    mean_auces = np.mean(np.array([fold[3][0] for fold in results]), axis=0) # (fold,classes->mean_auces_scores)
+    mean_auses = np.mean(np.array([fold[4][0] for fold in results]), axis=0) # (fold,classes->mean_auses_scores)
     
-    std_f1 = np.std(np.array([[class_tuple[1] for class_tuple in fold[1]] for fold in results]), axis=1) # (classes,mean_f1)
+    std_f1 = np.std(np.array([[class_tuple[1] for class_tuple in fold[1]] for fold in results]), axis=0) # (classes,mean_f1)
     std_mcc = np.std(np.array([fold[2] for fold in results]), axis=0) # (mean_mcc)
-    std_auces = np.std(np.array([fold[3][0] for fold in results]), axis=1) # (classes,mean_auces_scores)
-    std_auses = np.std(np.array([fold[4][0] for fold in results]), axis=1) # (classes,mean_auses_scores)
+    std_auces = np.std(np.array([fold[3][0] for fold in results]), axis=0) # (classes,mean_auces_scores)
+    std_auses = np.std(np.array([fold[4][0] for fold in results]), axis=0) # (classes,mean_auses_scores)
     
     mean_std_results = {
         "classes":classes_id,
