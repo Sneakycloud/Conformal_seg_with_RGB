@@ -99,16 +99,19 @@ def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
     predictions: (Batch,batch_size,channel,height,width)
 
     '''
-    # lists to store predicted values, gt values and uncertainties across all
-    # images
-    pred_vector = np.array([])
-    target_vector = np.array([])
-    uq_vector = np.array([])
 
+    uq_method = UQ[uq_id]
 
-    for batch_id, (rgb, depth, targets) in enumerate(validation_dataloader):
-        uq_method = UQ[uq_id]
-        batch_predicted = predictions[batch_id] 
+    pred_list = []
+    target_list = []
+    uq_list = []
+
+    for batch_id, (rgb, depth, targets, *_) in enumerate(validation_dataloader):
+
+        start_idx = batch_id * targets.shape[0]
+        end_idx = start_idx + targets.shape[0]
+        batch_predicted = predictions[start_idx:end_idx]
+        
         for i in range(len(batch_predicted)):
             target = targets[i].numpy() # (Channel, height, width)
             target = np.squeeze(target, axis=0) # (Height, width)
@@ -135,14 +138,14 @@ def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
             else:
                 raise Exception("No longer implemented in evaluate_uncertainity_maps.py for methods other than oracle and prob")
 
-            uqs = uqs.flatten()
-            target = target.flatten()
-            predicted = predicted.argmax(axis=0).flatten()
+            # Store the flattened elements in lists to prevent continuous RAM allocations
+            pred_list.append(predicted.argmax(axis=0).flatten())
+            target_list.append(target.flatten())
+            uq_list.append(uqs.flatten())
 
-            # store all predictions, gt values and uncertainties
-            pred_vector = np.concatenate([pred_vector, predicted])
-            target_vector = np.concatenate([target_vector, target])
-            uq_vector = np.concatenate([uq_vector, uqs])
+    pred_vector = np.concatenate(pred_list)
+    target_vector = np.concatenate(target_list)
+    uq_vector = np.concatenate(uq_list)
 
     # normalize uq values
     uq_min = uq_vector.min()
@@ -151,35 +154,24 @@ def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
     step_through(results, uq_id, classes, uq_vector, pred_vector,
                  target_vector, steps, uncertainties)
 
+    stream_mask = (pred_vector == 2)
+    ditch_mask = (pred_vector == 1)
+
     # get all pixels predicted as stream
     tmp_results = np.zeros(results.shape)
-    step_through(tmp_results, uq_id, classes, uq_vector[pred_vector == 2],
-                 pred_vector[pred_vector == 2],
-                 target_vector[pred_vector == 2], steps)
-    # compute confusion matrix without predicted stream pixels and add to all
-    # confusion matrices
-    # conf = np.zeros((2, 1, 1, 3, 3))
-    # calculate_step(conf, 0, classes, pred_vector[pred_vector != 2],
-    #                target_vector[pred_vector != 2], [], 0)
-    # indiv_results[0, uq_id] = (tmp_results[1, uq_id]
-    #                            + conf[0, 0].repeat(len(steps), axis=0))
+    step_through(tmp_results, uq_id, classes, uq_vector[stream_mask],
+                 pred_vector[stream_mask],
+                 target_vector[stream_mask], steps)
     indiv_results[0, uq_id] = tmp_results[1, uq_id]
 
     # get all pixels predicted as ditch
     tmp_results = np.zeros(results.shape)
-    step_through(tmp_results, uq_id, classes, uq_vector[pred_vector == 1],
-                 pred_vector[pred_vector == 1],
-                 target_vector[pred_vector == 1], steps)
-    # compute confusion matrix without predicted stream pixels and add to all
-    # confusion matrices
-    # conf = np.zeros((2, 1, 1, 3, 3))
-    # calculate_step(conf, 0, classes, pred_vector[pred_vector != 1],
-    #                target_vector[pred_vector != 1], [], 0)
-    # indiv_results[1, uq_id] = (tmp_results[1, uq_id]
-    #                            + conf[0, 0].repeat(len(steps), axis=0))
+    step_through(tmp_results, uq_id, classes, uq_vector[ditch_mask],
+                 pred_vector[ditch_mask],
+                 target_vector[ditch_mask], steps)
     indiv_results[1, uq_id] = tmp_results[1, uq_id]
 
-    return len(uq_vector), np.sum(pred_vector == 2), np.sum(pred_vector == 1)
+    return len(uq_vector), np.sum(stream_mask), np.sum(ditch_mask)
 
 
 def compute_fmes(confusion, cls_id):
@@ -200,6 +192,9 @@ def compute_fmes(confusion, cls_id):
     fneg = confusion[cls_id, :].sum() - tpos
     # false positive are all predicted positives, except the true positives
     fpos = confusion[:, cls_id].sum() - tpos
+
+    if (2 * tpos + fpos + fneg) == 0:
+        return 0.0
 
     return 2*tpos / (2*tpos + fpos + fneg)
 
@@ -646,7 +641,7 @@ def evaluate_uncertainty(predictions, dataloader, classes, out_path):
 
     '''
     # sparse_steps = np.arange(0.0, 1.001, 0.001)
-    sparse_steps = np.arange(0.0, 1.001, 0.01)
+    sparse_steps = np.arange(0.0, 1.001, 0.05)
     # sparse_steps = np.concatenate([sparse_steps, np.arange(0.1, 1.05, 0.05)])
     results = np.zeros((2, len(UQ), len(sparse_steps), len(classes),
                         len(classes)))
