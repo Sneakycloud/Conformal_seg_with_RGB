@@ -419,6 +419,7 @@ class UNet(BaseUNet):
 
         results = {'img': [], 'mcc': []}
         confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
+
         for cls_id in classes:
             results[f'f_{cls_id}'] = []
 
@@ -481,6 +482,7 @@ class MultiViewFusionRGBD(nn.Module):
         self._device      = device
 
     def forward(self, rgb_images, depth_images):
+
             rgb_prediction   = self.rgb_unet(rgb_images)
             depth_prediction = self.depth_unet(depth_images)
 
@@ -682,6 +684,7 @@ class MultiViewFusionRGBD(nn.Module):
 
         results = {'img': [], 'mcc': []}
         confusion = {f: {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0} for f in classes}
+
         for cls_id in classes:
             results[f'f_{cls_id}'] = []
 
@@ -693,6 +696,7 @@ class MultiViewFusionRGBD(nn.Module):
             depth_inputs = depth.to(self._device)
 
             with torch.no_grad():
+
                 outputs = self.forward(rgb_inputs, depth_inputs)
 
             img_id = batch_idx * rgb.shape[0]
@@ -739,8 +743,17 @@ class MultiViewFusionRGBD(nn.Module):
         return kl
 
     def ce_loss(self, p, alpha, c, global_step, annealing_step):
+    
+            '''
+        :param p: ground truth
+        :param alpha: evidence
+        :param c: how many classes there are
+        :global_step: which step the epoch is on
+        :annealing_step: how many global steps are required for one annealing step
+        '''
         S     = torch.sum(alpha, dim=1, keepdim=True)
         E     = alpha - 1
+
         label = F.one_hot(p, num_classes=c)
         A     = torch.sum(label * (torch.digamma(S) - torch.digamma(alpha)),
                           dim=1, keepdim=True)

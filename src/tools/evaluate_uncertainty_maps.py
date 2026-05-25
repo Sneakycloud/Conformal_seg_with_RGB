@@ -96,8 +96,10 @@ def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
     map_path : Path to the precomputed uncertainty maps
     classes : List of class labels
     steps : Fractions to use in each step
+    predictions: (Batch,batch_size,channel,height,width)
 
     '''
+
     uq_method = UQ[uq_id]
 
     pred_list = []
@@ -111,8 +113,11 @@ def calcualte_sparsification(results, indiv_results, uncertainties, uq_id,
         batch_predicted = predictions[start_idx:end_idx]
         
         for i in range(len(batch_predicted)):
-            target = targets[i]
-            predicted = batch_predicted[i]
+            target = targets[i].numpy() # (Channel, height, width)
+            target = np.squeeze(target, axis=0) # (Height, width)
+            
+            predicted = batch_predicted[i].numpy() # (Channel, height, width)
+            #predicted = np.transpose(predicted, (1,2,0)) #(height, width, channel)
             
             if uq_method == 'oracle':
                 # calculate cross-entropy per pixel

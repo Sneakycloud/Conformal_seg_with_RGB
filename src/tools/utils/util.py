@@ -10,8 +10,7 @@ def select_from_index(data, index):
     Parameters
     ----------
     data : Data to select from [C, K_n, ..., K_1]
-    index : Array of index values [K_n, ..., K_1] with indices ranging from 0
-    to C
+    index : Array of index values [K_n, ..., K_1] with indices ranging from 0 to C
 
     Returns
     -------

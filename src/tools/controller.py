@@ -11,6 +11,7 @@ import utils.util as util
 
 import h5py
 
+
 import sys
 import os
 
@@ -19,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 #datapath = "/home/beax22tr/nyu_depth_v2_labeled.mat"
 datapath = "/home/beax22tr/SUN_RGBD"
 #datapath = "../../../../home/data/epsilon/nyu_depth_v2_labeled.mat"
+
 
 epochs = 50
 batch_size = 16
