@@ -103,8 +103,6 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
 
     rng = np.random.default_rng(42)
 
-    gen = torch.Generator().manual_seed(seed)
-
     dataset = dh.SUNRGBDDataset2(
     root=folder_path,
     num_classes=13,
@@ -114,7 +112,7 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         dh.RandomHorizontalFlip(p=0.5),
         dh.RandomRotation(p=0.5)
     ]),
-    img_size=(240, 320)
+    img_size=(480, 640)
     )
 
     if class_list == None:
@@ -124,9 +122,10 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     
     MAX_SAMPLES = 2000
     if len(dataset) > MAX_SAMPLES:
+        cpu_generator = torch.Generator(device='cpu').manual_seed(seed)
         indices = torch.randperm(len(dataset), 
-                                generator=torch.Generator().manual_seed(seed))[:MAX_SAMPLES]
-        dataset = torch.utils.data.Subset(dataset, indices)
+                                generator=cpu_generator, device='cpu')[:MAX_SAMPLES]
+        dataset = torch.utils.data.Subset(dataset, indices.tolist())
         print(f'Subsampled dataset to {MAX_SAMPLES} images', flush=True)
     
     #To prepare for cross validation: https://discuss.pytorch.org/t/using-k-fold-cross-validation-to-train-my-model/196288
@@ -148,7 +147,15 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
     for r in range(remainder):
         fold_sizes[r] += 1
 
-    folds = random_split(dataset, fold_sizes, generator=gen)
+    split_gen = torch.Generator(device='cpu').manual_seed(seed)
+    shuffled_indices = torch.randperm(total_len, generator=split_gen, device='cpu').tolist()
+
+    folds = []
+    current_idx = 0
+    for fold_size in fold_sizes:
+        fold_indices = shuffled_indices[current_idx : current_idx + fold_size]
+        folds.append(torch.utils.data.Subset(dataset, fold_indices))
+        current_idx += fold_size
 
     for fold in range(splits):
         logging.info(f'Fold {fold} training has started')
@@ -186,6 +193,14 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         #mcc has format: (mcc_score)
         #auces and auses has format: (methods, auces_scores)
         f1, mcc, auces, auses = model.final_evaluation(valid_it, class_list, log_path)
+
+        print(f"auces variable type: {type(auces)}")
+        print(f"auces raw content: {auces}")
+        if isinstance(auces, (tuple, list)):
+            print(f"Index 0 contains (type {type(auces[0])}): {auces[0]}")
+            if len(auces) > 1:
+                print(f"Index 1 contains (type {type(auces[1])}): {auces[1]}")
+
         fold_results = [f"Fold {fold} result", f1, mcc, auces, auses]
         
         #save results
@@ -201,25 +216,82 @@ def rgbd_train(folder_path,log_path,seed,epochs,batch_size, class_list = None, m
         
     #save results from evaluation
     pd.DataFrame(results).to_csv(os.path.join(log_path, f"Final_eval_results_{mode}"), index=False)
-    
-    
-    classes_id = [f1[0] for f1 in results[0][1]]
-    mean_f1 = np.mean(np.array([[f1_tuple[1] for f1_tuple in fold[1]] for fold in results]), axis=0) # (classes)
-    mean_mcc = np.mean(np.array([fold[2] for fold in results]), axis=0) # (mean_mcc)
+
+    mean_f1 = np.mean(np.array([[f1[1] for f1 in fold[1]] for fold in results]), axis=0) # (classes)
+    mean_mcc = np.mean(np.array([fold[2] for fold in results])) # (mean_mcc)
     mean_auces = np.mean(np.array([fold[3][0] for fold in results]), axis=0) # (fold,classes->mean_auces_scores)
     mean_auses = np.mean(np.array([fold[4][0] for fold in results]), axis=0) # (fold,classes->mean_auses_scores)
     
     std_f1 = np.std(np.array([[class_tuple[1] for class_tuple in fold[1]] for fold in results]), axis=0) # (classes,mean_f1)
-    std_mcc = np.std(np.array([fold[2] for fold in results]), axis=0) # (mean_mcc)
+    std_mcc = np.std(np.array([fold[2] for fold in results])) # (mean_mcc)
     std_auces = np.std(np.array([fold[3][0] for fold in results]), axis=0) # (classes,mean_auces_scores)
     std_auses = np.std(np.array([fold[4][0] for fold in results]), axis=0) # (classes,mean_auses_scores)
+
+    num_rows = max(len(mean_f1), len(mean_auces), len(mean_auses))
     
-    mean_std_results = {
-        "classes":classes_id,
-        "mean_f1":mean_f1,"mean_mcc":mean_mcc,"mean_auces":mean_auces,"mean_auses":mean_auses,
-        "std_f1":std_f1,"std_mcc":std_mcc,"std_auces":std_auces,"std_auses":std_auses
+    rows = []
+    for i in range(num_rows):
+
+        if i < len(mean_f1):
+            class_label = f"Class_{i}"
+        else:
+            class_label = "Global_Uncertainty"
+
+        row = {
+            "class_id": class_label,
+            "mean_f1": mean_f1[i] if i < len(mean_f1) else np.nan,
+            "std_f1": std_f1[i] if i < len(std_f1) else np.nan,
+            "mean_auces": mean_auces[i] if i < len(mean_auces) else np.nan,
+            "std_auces": std_auces[i] if i < len(std_auces) else np.nan,
+            "mean_auses": mean_auses[i] if i < len(mean_auses) else np.nan,
+            "std_auses": std_auses[i] if i < len(std_auses) else np.nan,
         }
+        rows.append(row)
+
+    print(f"\n--- DEBUGGING COLUMN SHAPES ---")
     
-    pd.DataFrame(mean_std_results).to_csv(os.path.join(log_path, f"Final_eval_results_mean_std_{mode}"), index=False)
+    try: print(f"Total structured rows to save: {len(rows)}")
+    except Exception as e: print(f"rows error: {e}")
+        
+    try: print(f"mean_f1 shape: {mean_f1.shape if hasattr(mean_f1, 'shape') else len(mean_f1)}")
+    except Exception as e: print(f"mean_f1 error: {e}")
+    try: print(f"std_f1 shape: {std_f1.shape if hasattr(std_f1, 'shape') else len(std_f1)}")
+    except Exception as e: print(f"std_f1 error: {e}")
+        
+    try: print(f"mean_auces shape: {mean_auces.shape if hasattr(mean_auces, 'shape') else len(mean_auces)}")
+    except Exception as e: print(f"mean_auces error: {e}")
+    try: print(f"std_auces shape: {std_auces.shape if hasattr(std_auces, 'shape') else len(std_auces)}")
+    except Exception as e: print(f"std_auces error: {e}")
+        
+    try: print(f"mean_auses shape: {mean_auses.shape if hasattr(mean_auses, 'shape') else len(mean_auses)}")
+    except Exception as e: print(f"mean_auses error: {e}")
+    try: print(f"std_auses shape: {std_auses.shape if hasattr(std_auses, 'shape') else len(std_auses)}")
+    except Exception as e: print(f"std_auses error: {e}")
+        
+    try: 
+        mcc_mean_val = "Scalar Value" if np.isscalar(mean_mcc) else (mean_mcc.shape if hasattr(mean_mcc, 'shape') else len(mean_mcc))
+        print(f"mean_mcc representation: {mcc_mean_val}")
+    except Exception as e: print(f"mean_mcc error: {e}")
+        
+    try: 
+        mcc_std_val = "Scalar Value" if np.isscalar(std_mcc) else (std_mcc.shape if hasattr(std_mcc, 'shape') else len(std_mcc))
+        print(f"std_mcc representation: {mcc_std_val}")
+    except Exception as e: print(f"std_mcc error: {e}")
+        
+    print(f"--------------------------------\n")
     
+    pd.DataFrame(rows).to_csv(
+        os.path.join(log_path, f"Final_class_metrics_{mode}.csv"), index=False
+    )
+    
+    global_results_dict = {
+        "metric": ["MCC"],
+        "mean": [mean_mcc],
+        "std": [std_mcc]
+    }
+    pd.DataFrame(global_results_dict).to_csv(
+        os.path.join(log_path, f"Final_global_summary_{mode}.csv"), index=False
+    )
+    
+    print("All evaluation metrics saved successfully without dimension conflicts!")
     logging.info('End training')

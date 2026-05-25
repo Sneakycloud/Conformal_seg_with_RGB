@@ -481,22 +481,23 @@ class MultiViewFusionRGBD(nn.Module):
         self._device      = device
 
     def forward(self, rgb_images, depth_images):
-        rgb_prediction   = self.rgb_unet(rgb_images)
-        depth_prediction = self.depth_unet(depth_images)
+            rgb_prediction   = self.rgb_unet(rgb_images)
+            depth_prediction = self.depth_unet(depth_images)
 
-        # evidence = softplus output + 1 (always >= 1)
-        rgb_evidence   = F.softplus(rgb_prediction)   + 1
-        depth_evidence = F.softplus(depth_prediction) + 1
+            rgb_evidence   = F.softplus(rgb_prediction)   + 1
+            depth_evidence = F.softplus(depth_prediction) + 1
 
-        # --- FIX: vectorised DS combination, no pixel loops ---
-        alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence) # (B,C,H,W)
-        alpha_combined = torch.permute(alpha_combined, (0,2,3,1)) # (B,H,W,C)
-        alpha_batched = torch.reshape(alpha_combined, (alpha_combined.shape[0]*alpha_combined.shape[1]*alpha_combined.shape[2],alpha_combined.shape[3])) # (B*H*W,C)
-        uncertainity_maps = torch.distributions.dirichlet.Dirichlet(alpha_batched).sample() # (B*H*W,C)
-        uncertainity_maps = torch.reshape(uncertainity_maps, (alpha_combined.shape[0],alpha_combined.shape[1],alpha_combined.shape[2],alpha_combined.shape[3])) # (B,H,W,C)
-        uncertainity_maps = torch.permute(uncertainity_maps, (0,3,1,2)) # (B,C,H,W)
-        
-        return uncertainity_maps
+            alpha_combined = self._DS_Combin_vectorised(rgb_evidence, depth_evidence)
+
+            S = alpha_combined.sum(dim=1, keepdim=True)
+            probs = alpha_combined / S
+            
+            if self.training:
+
+                return alpha_combined 
+            else:
+
+                return probs
 
     def _DS_Combin_vectorised(self, alpha1, alpha2):
         '''Vectorised Dempster-Shafer combination of two alpha tensors.
@@ -579,7 +580,7 @@ class MultiViewFusionRGBD(nn.Module):
         S = alpha_flat.sum(dim=1, keepdim=True)                 # (B*H*W, 1)
         one_hot = F.one_hot(labels_flat, num_classes=C).float() # (B*H*W, C)
 
-        # classification term
+        # classification
         A = (one_hot * (torch.digamma(S) - torch.digamma(alpha_flat))).sum(dim=1)
 
         # KL regularisation with annealing
