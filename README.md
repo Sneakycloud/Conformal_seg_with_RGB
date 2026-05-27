@@ -1,5 +1,15 @@
-# Uncertainty Quantification for LiDAR-based Maps of Ditches and Natural Streams
-Repository accompanying the paper "Uncertainty Quantification for LiDAR-based Maps of Ditches and Natural Streams".
+# Conformal semantic segmentation for RGB and depth utilizing Dirichlet distributions
+Forked from the repository accompanying the paper "Uncertainty Quantification for LiDAR-based Maps of Ditches and Natural Streams".
+
+The modifications we made:
+- Made rgb,depth,and mask dataloaders for SUN-RGBD and NYU depth v2 for semantic segmentation
+- Data exploration for SUN-RGBD
+- Modified U-net to use rgb and depth
+- Created the trusted multi-view (TMC) model for semantic segmentation
+- Vector optimized loss for semantic segmentation for TMC
+- Modified metric calculations to work with new data loader
+- Implemented cross-validitation
+- Reduced memory usage
 
 ## Source Code
 
@@ -15,5 +25,4 @@ can be found in [data](data/).
 
 ## Groundtruth Data
 
-The groundtruth data used in this article can be obtained from the Swedish
-National Data Service at: [https://doi.org/10.5878/jrex-z325](https://doi.org/10.5878/jrex-z325).
+The reorganized SUN RGBD dataset that was used can be retrieved from [here](https://github.com/chrischoy/SUN_RGBD/tree/master)
