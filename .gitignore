@@ -5,6 +5,12 @@ __pycache__/
 
 #
 *.mat
+./data/sunrgbd/depth
+./data/sunrgbd/image
+./data/sunrgbd/label13
+./data/sunrgbd/label37
+./data/sunrgbd/test13.txt
+./data/sunrgbd/test37.txt
 
 # C extensions
 *.so
