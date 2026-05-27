@@ -10,9 +10,11 @@ Alternatively the following commands should work:
 - pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 # To run
-First change the `datapath` variable in controller.py to whatever folder you have installed your data in.
+First install the [reorganized SUN RGB-D](https://github.com/chrischoy/SUN_RGBD/tree/master) and follow the instructions therein.
 
-use ``python controller.py`` in the [tools](tools/) directory.
+Secondly change the `datapath` variable in controller.py to whatever folder you have installed your data in.
+
+Lastly use ``python controller.py`` in the [tools](tools/) directory.
 
 If desired then parameters can be changed in the controller.py:
 - Epochs = 50
