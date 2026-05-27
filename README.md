@@ -2,10 +2,10 @@
 Forked from the repository accompanying the paper "Uncertainty Quantification for LiDAR-based Maps of Ditches and Natural Streams".
 
 The modifications we made:
-- Made rgb,depth,and mask dataloaders for SUN-RGBD and NYU depth v2 for semantic segmentation
-- Data exploration for SUN-RGBD
+- Made dataloaders for [reorganized SUN RGB-D](https://github.com/chrischoy/SUN_RGBD/tree/master) and [NYU depth v2](https://cs.nyu.edu/~fergus/datasets/nyu_depth_v2.html) for semantic segmentation using rgb and depth
+- Data exploration for SUN RGB-D
 - Modified U-net to use rgb and depth
-- Created the trusted multi-view (TMC) model for semantic segmentation
+- Created the trusted multi-view ([TMC](https://arxiv.org/abs/2204.11423)) based model for semantic segmentation
 - Vector optimized loss for semantic segmentation for TMC
 - Modified metric calculations to work with new data loader
 - Implemented cross-validitation
