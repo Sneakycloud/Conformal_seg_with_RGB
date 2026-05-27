@@ -744,20 +744,20 @@ class MultiViewFusionRGBD(nn.Module):
 
     def ce_loss(self, p, alpha, c, global_step, annealing_step):
     
-            '''
+        '''
         :param p: ground truth
         :param alpha: evidence
         :param c: how many classes there are
         :global_step: which step the epoch is on
         :annealing_step: how many global steps are required for one annealing step
         '''
-        S     = torch.sum(alpha, dim=1, keepdim=True)
-        E     = alpha - 1
+        S = torch.sum(alpha, dim=1, keepdim=True)
+        E = alpha - 1
 
         label = F.one_hot(p, num_classes=c)
-        A     = torch.sum(label * (torch.digamma(S) - torch.digamma(alpha)),
+        A = torch.sum(label * (torch.digamma(S) - torch.digamma(alpha)),
                           dim=1, keepdim=True)
         annealing_coef = min(1, global_step / annealing_step)
-        alp   = E * (1 - label) + 1
-        B     = annealing_coef * self.KL(alp, c)
+        alp = E * (1 - label) + 1
+        B = annealing_coef * self.KL(alp, c)
         return A + B
