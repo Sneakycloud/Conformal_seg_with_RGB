@@ -9,7 +9,7 @@ Alternatively the following commands should work:
 - pip install concretedropout
 - pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-#To run
+# To run
 First change the `datapath` variable in controller.py to whatever folder you have installed your data in.
 
 use ``python controller.py`` in the [tools](tools/) directory.
