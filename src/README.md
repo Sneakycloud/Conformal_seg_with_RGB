@@ -17,7 +17,7 @@ use ``python controller.py`` in the [tools](tools/) directory.
 If desired then parameters can be changed in the controller.py:
 - Epochs = 50
 - Batch_size = 16
-- Mode = "RGB", "D", "RGBD" or "TMC". Where each corresponds to their spesific model as outlined in our study.
+- Mode = "RGB", "D", "RGBD" or "TMC". Where each corresponds to their specific model as outlined in our study.
 - Seed = 42. This was for consistent testing but may be adjusted as required
 
 There are some other parameters that may want to be adjusted based on the use_case in rgbd_train() in ``train.py`` which is also located in [tools](tools/) directory.
