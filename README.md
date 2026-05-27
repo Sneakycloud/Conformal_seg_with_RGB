@@ -19,8 +19,7 @@ implementation can be found in [src](src/).
 
 ## Experiment Data
 
-The raw data collected through the conducted experiments and its description
-can be found in [data](data/).
+The raw data collected through the conducted experiments can be found in [logs](logs/).
 
 
 ## Groundtruth Data
