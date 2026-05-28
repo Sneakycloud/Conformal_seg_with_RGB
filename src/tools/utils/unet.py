@@ -461,7 +461,7 @@ class UNet(BaseUNet):
         results['mcc'].append(mcc)
 
         predictions_final = torch.from_numpy(np.stack(collected_predictions))
-        auces, auses = evaluate_uncertainty(predictions_final, valid_it,
+        auses, auces = evaluate_uncertainty(predictions_final, valid_it,
                                             classes, log_path)
 
         return f1_class_list, mcc, auces, auses
@@ -722,7 +722,7 @@ class MultiViewFusionRGBD(nn.Module):
         results['mcc'].append(mcc)
 
         predictions_final = torch.from_numpy(np.stack(collected_predictions))
-        auces, auses = evaluate_uncertainty(predictions_final, valid_it,
+        auses, auces = evaluate_uncertainty(predictions_final, valid_it,
                                             classes, log_path)
 
         return f1_class_list, mcc, auces, auses
